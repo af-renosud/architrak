@@ -141,6 +141,8 @@ describe("quotation carry-forward", () => {
       return { json: async () => url.includes("carry-forward") ? preview : options } as Response;
     });
     wrap(<QuotationReplacementHistory entries={entries} devisId={devisId} projectId="4" />);
+    expect(screen.getByRole("button", { name: "Review previous work" })).not.toBeVisible();
+    fireEvent.click(screen.getByText("Replacement history (1)"));
     fireEvent.click(screen.getByRole("button", { name: "Review previous work" }));
     await screen.findByTestId("quotation-carry-forward-panel");
     fireEvent.click(screen.getByRole("button", { name: "Review selected work" }));

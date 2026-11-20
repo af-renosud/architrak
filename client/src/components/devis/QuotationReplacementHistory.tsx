@@ -13,7 +13,12 @@ export function QuotationReplacementHistory({ entries, devisId, projectId }: {
   const related = entries.filter(entry => entry.oldDevisId === devisId || entry.newDevisId === devisId);
   if (!related.length) return null;
   return (
-    <div className="quotation-list-history mt-2 space-y-2 rounded-lg border bg-muted/30 px-4 py-3 text-xs" data-testid={`replacement-history-${devisId}`}>
+    <div className="quotation-list-history mt-2 text-xs" data-testid={`replacement-history-${devisId}`}>
+      <details onClick={event => event.stopPropagation()}>
+        <summary className="w-fit cursor-pointer rounded px-2 py-1 font-medium text-muted-foreground hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">
+          Replacement history ({related.length})
+        </summary>
+        <div className="mt-2 space-y-2 rounded-lg border bg-muted/30 px-4 py-3">
         {related.map(entry => {
           const outgoing = entry.oldDevisId === devisId;
           return (
@@ -37,6 +42,8 @@ export function QuotationReplacementHistory({ entries, devisId, projectId }: {
             </div>
           );
         })}
+        </div>
+      </details>
         {reviewEntry && <ReviewPreviousQuotationWorkDialog sourceId={reviewEntry.oldDevisId} targetId={reviewEntry.newDevisId}
           sourceLabel={reviewEntry.oldLabel} targetLabel={reviewEntry.newLabel} projectId={projectId} onClose={() => setReviewEntry(null)} />}
     </div>

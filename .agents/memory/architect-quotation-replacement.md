@@ -22,6 +22,10 @@ Translation context, especially embedded images, is the user's highest-value aut
 
 Replaced quotations belong in collapsed previous-version history beneath the latest quotation, not as competing main-list cards.
 
+Replacement relationship details on the current quotation must also be collapsed by default, behind a small reveal control.
+
+**Why:** The user explicitly finds the always-visible replacement reference, notes and previous-work actions distracting once replacement is complete.
+
 **Why:** The user found separate superseded cards confusing even with status badges.
 
 **How to apply:** Follow only explicit replacement links, keep old references searchable and directly accessible, and leave incomplete or unavailable relationships visible rather than hiding evidence.
