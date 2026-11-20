@@ -3487,6 +3487,16 @@ export const users = pgTable("users", {
   gmailLastPollError: text("gmail_last_poll_error"),
 });
 
+export const jobsJotters = pgTable("jobs_jotters", {
+  userId: integer("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  content: text("content").notNull().default(""),
+  revision: integer("revision").notNull().default(0),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  check("jobs_jotters_content_length", sql`char_length(${table.content}) <= 100000`),
+  check("jobs_jotters_revision_positive", sql`${table.revision} >= 0`),
+]);
+
 export const sessions = pgTable("session", {
   sid: varchar("sid").primaryKey(),
   sess: jsonb("sess").notNull(),

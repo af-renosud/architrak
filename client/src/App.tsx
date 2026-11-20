@@ -30,6 +30,7 @@ import AdminSignedPdfRecovery from "@/pages/admin-signed-pdf-recovery";
 import AdminArchisignRendering from "@/pages/admin-archisign-rendering";
 import { Loader2 } from "lucide-react";
 import { ScrollNavigation } from "@/components/layout/ScrollNavigation";
+import JobsJotter from "@/components/jobs/JobsJotter";
 
 function Router() {
   return (
@@ -76,7 +77,7 @@ function AuthGate() {
     return <LoginPage />;
   }
 
-  return <><Router /><ScrollNavigation /></>;
+  return <><Router /><ScrollNavigation /><JobsJotter /></>;
 }
 
 function App() {

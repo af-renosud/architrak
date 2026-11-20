@@ -85,3 +85,4 @@
 - [Issued, not paid](certificate-issued-not-paid.md) — certificate summaries report issued authorisations; contractor receipt confirmation is optional, never presumed.
 - [Inline quotation context](inline-quotation-context.md) — context text/images stay editable beneath translated items; preserve autosave and approval safeguards.
 - [Grounded quotation context](grounded-quotation-context.md) — Gemini explanations add exact-product knowledge, preserve existing context, and remain part of ordinary quotation review.
+- [Jobs jotter](jobs-jotter.md) — database-persisted personal notes; closing never deletes, and concurrent edits must not silently overwrite.

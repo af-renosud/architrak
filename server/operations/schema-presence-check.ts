@@ -70,6 +70,13 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0153_jobs_jotter", artifact: { kind: "all", artifacts: [
+    { kind: "table", table: "jobs_jotters" },
+    { kind: "constraint", table: "jobs_jotters", constraint: "jobs_jotters_pkey" },
+    { kind: "constraint", table: "jobs_jotters", constraint: "jobs_jotters_user_id_users_id_fk" },
+    { kind: "constraint", table: "jobs_jotters", constraint: "jobs_jotters_content_length" },
+    { kind: "constraint", table: "jobs_jotters", constraint: "jobs_jotters_revision_positive" },
+  ] } },
   { tag: "0152_certificate_late_invoice_links", artifact: { kind: "all", artifacts: [
     { kind: "column", table: "certificat_sources", column: "late_association" },
     { kind: "trigger", table: "certificat_sources", trigger: "certificate_late_association_guard" },
