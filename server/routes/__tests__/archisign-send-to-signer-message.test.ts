@@ -44,6 +44,7 @@ const { archisignMock, insuranceMock, tokenMock, emailMock } = vi.hoisted(() => 
   archisignMock: {
     createEnvelope: vi.fn(),
     sendEnvelope: vi.fn(),
+    getEnvelopeStatus: vi.fn(),
     assertPdfFetchUrlTtl: vi.fn(),
   },
   insuranceMock: {
@@ -76,6 +77,7 @@ vi.mock("../../storage", async () => {
       "getUser",
       "persistSignatureQuestionReceipt",
       "getSignatureQuestionReceipt",
+      "retireUnsentSignatureEnvelope",
       "getDevisLineItems",
     ]),
   };
@@ -110,6 +112,7 @@ vi.mock("../../services/archisign", () => {
     ArchisignConfigError,
     createEnvelope: archisignMock.createEnvelope,
     sendEnvelope: archisignMock.sendEnvelope,
+    getEnvelopeStatus: archisignMock.getEnvelopeStatus,
     assertPdfFetchUrlTtl: archisignMock.assertPdfFetchUrlTtl,
     // Task #269 — real (English) subject builder, not a stub, so the
     // subject forwarded to createEnvelope stays asserted here.
@@ -194,6 +197,8 @@ beforeEach(() => {
   storageMock.listDevisChecks.mockResolvedValue([]);
   storageMock.getUser.mockResolvedValue({ id: 1, email: "lea@atelier.test" });
   storageMock.getSignatureQuestionReceipt.mockResolvedValue(undefined);
+  storageMock.retireUnsentSignatureEnvelope.mockResolvedValue(true);
+  archisignMock.getEnvelopeStatus.mockResolvedValue("draft");
   storageMock.getDevisLineItems.mockResolvedValue([]);
   storageMock.persistSignatureQuestionReceipt.mockImplementation(async (id, data) => {
     await storageMock.updateDevis(id, data);
@@ -239,6 +244,58 @@ const question = (overrides: Partial<DevisCheck> = {}): DevisCheck => ({
   ...overrides,
 });
 const contextMessage = "Please review this quotation before signing.";
+it("does not dispatch a package when context changes during envelope preparation", async () => {
+  archisignMock.createEnvelope.mockImplementationOnce(async () => {
+    storageMock.getDevisTranslation.mockResolvedValue({ status: "finalised", contextsVersion: 1 });
+    return { envelopeId: "env_stale", accessUrl: "https://archisign.test/e/stale", accessToken: "tok" };
+  });
+  const response = await postSend(100, { message: contextMessage });
+  expect(response.status).toBe(409);
+  expect((await response.json()).code).toBe("QUOTATION_PACKAGE_CHANGED");
+  expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
+});
+it("recovers an outdated unsent envelope across requests without ever dispatching the obsolete package", async () => {
+  const d = makeDevis();
+  let receipt: SignatureQuestionReceipt | undefined;
+  storageMock.getDevis.mockImplementation(async () => ({ ...d }));
+  storageMock.updateDevis.mockImplementation(async (_id, changes) => Object.assign(d, changes));
+  storageMock.getSignatureQuestionReceipt.mockImplementation(async () => receipt);
+  storageMock.persistSignatureQuestionReceipt.mockImplementation(async (_id, changes, _actor, value) => {
+    Object.assign(d, changes); receipt = value;
+  });
+  storageMock.retireUnsentSignatureEnvelope.mockImplementation(async () => {
+    Object.assign(d, { archisignEnvelopeId: null, archisignPinnedPdfStorageKey: null, archisignEnvelopeStatus: null });
+    return true;
+  });
+  archisignMock.createEnvelope.mockImplementationOnce(async () => {
+    storageMock.getDevisTranslation.mockResolvedValue({ status: "finalised", contextsVersion: 1 });
+    return { envelopeId: "obsolete", accessUrl: "https://archisign.test/obsolete", accessToken: "tok" };
+  });
+  expect((await postSend(100, { message: contextMessage })).status).toBe(409);
+  expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
+  const retry = await postSend(100, {});
+  expect(retry.status, JSON.stringify(await retry.json())).toBe(200);
+  expect(archisignMock.getEnvelopeStatus).toHaveBeenCalledWith("obsolete");
+  expect(storageMock.retireUnsentSignatureEnvelope).toHaveBeenCalledWith(100, "obsolete", 1, "draft");
+  expect(archisignMock.sendEnvelope.mock.calls.map(call => call[0])).toEqual(["env_42"]);
+});
+it.each(["sent", "viewed", "signed", "queried", "declined", "expired"])("never replaces an outdated envelope reported as %s", async status => {
+  storageMock.getDevis.mockResolvedValue(makeDevis({ archisignEnvelopeId: "uncertain" }));
+  storageMock.getSignatureQuestionReceipt.mockResolvedValue({ envelopeId: "uncertain", quotationContentVersion: "older" });
+  archisignMock.getEnvelopeStatus.mockResolvedValue(status);
+  expect((await postSend(100, {})).status).toBe(409);
+  expect(storageMock.retireUnsentSignatureEnvelope).not.toHaveBeenCalled();
+  expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
+  expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
+});
+it("leaves an uncertain envelope untouched when provider reconciliation fails", async () => {
+  storageMock.getDevis.mockResolvedValue(makeDevis({ archisignEnvelopeId: "uncertain" }));
+  storageMock.getSignatureQuestionReceipt.mockResolvedValue({ envelopeId: "uncertain", quotationContentVersion: "older" });
+  archisignMock.getEnvelopeStatus.mockRejectedValueOnce(new Error("provider unavailable"));
+  expect((await postSend(100, {})).status).toBe(503);
+  expect(storageMock.retireUnsentSignatureEnvelope).not.toHaveBeenCalled();
+  expect(archisignMock.sendEnvelope).not.toHaveBeenCalled();
+});
 const reason = "Reviewed with the contractor; the open point does not affect approval.";
 function authorizedBody(checks = [question()]) {
   return { message: contextMessage, contractorQuestionAuthorization: {
@@ -628,8 +685,8 @@ describe("POST /api/devis/:id/send-to-signer — Mode B finalised-translation ga
     const res = await postSend(100, { message: "Bonjour, voici le devis pour signature — merci." });
     expect(res.status).toBe(409);
     const body = await res.json();
-    expect(body.code).toBe("translation_not_finalised");
-    expect(body.translationStatus).toBe(status);
+    expect(body.code).toBe("TRANSLATION_NOT_APPROVED");
+    expect(body.decision.issues.some((i: { code: string }) => i.code === "TRANSLATION_NOT_APPROVED")).toBe(true);
     expect(archisignMock.createEnvelope).not.toHaveBeenCalled();
   });
 

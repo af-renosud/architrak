@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
-  query: vi.fn(), quotation: vi.fn(), source: vi.fn(), translation: vi.fn(), generate: vi.fn(),
+  query: vi.fn(), quotation: vi.fn(), source: vi.fn(), translation: vi.fn(), generate: vi.fn(), receipts: [] as string[],
+}));
+vi.mock("../services/quotation-decision-snapshot", () => ({
+  loadQuotationDecisionSnapshot: async () => ({
+    quotation: await mocks.quotation(), lines: await mocks.source(), translation: await mocks.translation(),
+    hasCorrection: false, translationVerificationFingerprints: mocks.receipts,
+  }),
 }));
 vi.mock("../db", () => ({ pool: { query: mocks.query } }));
 vi.mock("../storage", () => ({ storage: { getDevis: mocks.quotation, getDevisLineItems: mocks.source, getDevisTranslation: mocks.translation } }));
@@ -33,21 +39,21 @@ describe("separate translated critical evidence", () => {
     ) } }));
     let receipt = "";
     mocks.query.mockImplementation(async (sql: string, args: any[]) => {
-      if (sql.includes("INSERT")) { receipt = JSON.parse(args[1]).fingerprint; return { rows: [] }; }
+      if (sql.includes("INSERT")) { receipt = JSON.parse(args[1]).fingerprint; mocks.receipts = [receipt]; return { rows: [] }; }
       return { rows: args[1] === receipt ? [{ verified: 1 }] : [] };
     });
     await verifyTranslationCoverage(1, target, header);
     expect(await translationCoverageBlocker(1)).toBeNull();
     mocks.translation.mockResolvedValue({ lineTranslations: target,
       headerTranslated: { ...header, description: "Joinery, painting included." } });
-    expect(await translationCoverageBlocker(1)).toContain("not been verified");
+    expect(await translationCoverageBlocker(1)).toContain("Review and approve");
     mocks.translation.mockResolvedValue({ lineTranslations: target,
       headerTranslated: { ...header, summary: "999 windows including painting." } });
     expect(await translationCoverageBlocker(1)).toContain("unsupported numbers");
     mocks.translation.mockResolvedValue({ lineTranslations: target, headerTranslated: header });
     mocks.quotation.mockResolvedValue({ descriptionFr: "Menuiseries avec peinture.",
       aiExtractedData: { quotationVerification: { verified: true } } });
-    expect(await translationCoverageBlocker(1)).toContain("not been verified");
+    expect(await translationCoverageBlocker(1)).toContain("Review and approve");
   });
   it("does not issue a receipt when semantic header verification fails", async () => {
     mocks.query.mockClear();

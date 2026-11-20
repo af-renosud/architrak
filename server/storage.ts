@@ -1015,6 +1015,7 @@ export interface IStorage {
   /** Envelope binding and append-only authorization receipt commit together. */
   persistSignatureQuestionReceipt(devisId: number, data: Partial<InsertDevis>, actorId: number, receipt: import("./services/contractor-question-authorization").SignatureQuestionReceipt): Promise<void>;
   getSignatureQuestionReceipt(devisId: number, envelopeId: string): Promise<import("./services/contractor-question-authorization").SignatureQuestionReceipt | undefined>;
+  retireUnsentSignatureEnvelope(devisId: number, envelopeId: string, actorId: number, providerStatus: string): Promise<boolean>;
 
   getUserByGoogleId(googleId: string): Promise<User | undefined>;
 
@@ -6219,6 +6220,25 @@ export class DatabaseStorage implements IStorage {
       if (receipt.envelopeId === envelopeId) return receipt;
     }
     return undefined;
+  }
+
+  /** Caller holds the signature lock and has just read the provider status.
+   * Never clear a possibly sent envelope based on optimistic local metadata. */
+  async retireUnsentSignatureEnvelope(devisId: number, envelopeId: string, actorId: number, providerStatus: string): Promise<boolean> {
+    if (providerStatus !== "draft") return false;
+    return db.transaction(async tx => {
+      const [current] = await tx.select().from(devis).where(eq(devis.id, devisId)).for("update");
+      if (!current || current.archisignEnvelopeId !== envelopeId ||
+        current.signOffStage !== "approved_for_signing" || current.signedPdfStorageKey ||
+        current.manualSignoffAt || current.archisignEnvelopeStatus === "signed") return false;
+      await tx.insert(clientProjectShareAudit).values({ projectId: current.projectId, devisId, actorUserId: actorId,
+        action: "signature_envelope_retired", detail: JSON.stringify({ envelopeId, providerStatus,
+          reason: "Quotation changed before dispatch", pinnedPdfStorageKey: current.archisignPinnedPdfStorageKey }) });
+      await tx.update(devis).set({ archisignEnvelopeId: null, archisignEnvelopeStatus: null,
+        archisignPinnedPdfStorageKey: null, archisignAccessUrl: null, archisignOtpDestination: null,
+        archisignEnvelopeExpiresAt: null, archisignAccessUrlInvalidatedAt: new Date() }).where(eq(devis.id, devisId));
+      return true;
+    });
   }
 
   async getUserByGoogleId(googleId: string): Promise<User | undefined> {

@@ -81,7 +81,21 @@ Anchors are file paths and symbol/route names rather than fragile line numbers.
 | Finalised status alone at project publish boundary | Boundary dependency requiring parity tests | Publish helper relies on upstream approval; send additionally evaluates source/translation guards. Consolidation must define shared prerequisites per action without making publishing and signing identical. |
 | Mode A draft signature vs mode B finalisation | Existing policy, not an obsolete workaround | New mode characterisation and existing readiness tests; retain distinction unless user separately approves a policy change. |
 
-## 4. Target decision model (specification, not implemented here)
+## 4. Common decision model
+
+### Implementation status — 2026-11-20
+
+The source/financial evaluator and coherent versioned snapshots now serve review readiness, approval commit, approval-stage advancement, client-link publication and signature preflight. The project card uses the same evaluator with **source-byte checks explicitly deferred to the authoritative action**, rather than downloading every original PDF during list refreshes. A deferred byte check is informational, never evidence that unavailable bytes were verified.
+
+Financial-save errors use the shared structured financial issues, including row and field targets. Content-only saves retain their separate existing transaction and do not require complete VAT. Independent TTC confirmation is required for a financial correction and for source evidence that cannot otherwise establish review eligibility; a clean machine-supported import does not acquire a blanket manual-transcription requirement.
+
+Approval-stage commit compares its checked version under quotation/line/translation locks. Publication checks the common client-link decision inside the membership/audit transaction and verifies that the token is still active. Signature preparation binds a content version to new envelope audit receipts and checks it again before dispatch, including on retries. Older envelope receipts retain their existing compatibility rules; no receipt is invented for them.
+
+An outdated signature envelope is recoverable through Retry: read its authoritative provider status under the signature lock; only a confirmed `draft` may be detached in an audited transaction and rebuilt with the latest PDF and a new receipt. Unavailable, already-dispatched or signed provider states must never be inferred to mean unsent. Retain the old audit and never overwrite its version to authorise old PDF bytes.
+
+Action distinctions remain deliberate: Mode A may send a machine-supported draft translation; Mode B requires finalisation. The card retains its pre-existing additional lot/English-description completeness checks. Recipient checks, live insurance, explicit question authorisation, immutable signed evidence and package construction remain owned by their existing delivery orchestration. A source decision alone is not permission to send.
+
+The following specification explains the vocabulary; the historical audit and its findings above document the starting point, not the current implementation. Extraction-exception presentation and the consolidated review interface remain the separately queued work.
 
 One read-only evaluator of a coherent versioned snapshot, with action-specific decisions:
 

@@ -150,6 +150,16 @@ export function deriveQuotationNextActions(input: QuotationActionEvidence): Quot
     add("prepare_signature", "Prepare signature request", "The local signing checklist is complete.",
       "Review the document and client message. Live safeguards are checked again before sending.", { target: "signature", priority: 60 });
   } else {
+    const issue = r.issues?.find(i => i.severity === "blocker");
+    if (issue) {
+      const target = issue.target.field === "lotId" ? "lot" : issue.target.field === "descriptionUk" ? "description"
+        : issue.target.section === "translation" ? "translation"
+        : ["source", "financial"].includes(issue.target.section) ? "source" : "signature";
+      add(issue.code, target === "source" ? "Review quotation source or figures" : target === "translation" ? "Review translation" : "Review signing requirements",
+        issue.message, "Open the indicated section, resolve the listed requirement, then review again.",
+        { target, priority: 60, tone: issue.code === "VERIFICATION_UNAVAILABLE" ? "unknown" : "blocked" });
+      return result();
+    }
     // One existing checklist contains all prerequisites; don't duplicate every advisory.
     add("review_signing", "Review signing requirements", "The local signing checklist still has items to review.",
       "Open the checklist to resolve prerequisites or review an available architect authorisation.",

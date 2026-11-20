@@ -4,13 +4,15 @@ import { quotationFinancialIssues } from "@shared/quotation-financial-decision";
 import { getDocumentBuffer } from "../storage/object-storage";
 import { pricedEvidenceIssues, workingCoverageIssues } from "./quotation-source-evidence";
 import type { ParsedDocument } from "../gmail/document-parser";
-import { quotationDecisionVersion, type QuotationDecisionSnapshot } from "./quotation-decision-snapshot";
+import { quotationDecisionVersion, quotationPackageVersion, type QuotationDecisionSnapshot } from "./quotation-decision-snapshot";
+import { quotationSigningIssues } from "@shared/quotation-signing-decision";
+import { translationSnapshotIssues } from "./quotation-translation-coverage";
 
 /** Authoritative source/review rules, independent of transport and UI.
  * Delivery-specific insurance, recipients and question authorisations remain
  * in their existing orchestration; this decision does not dispatch anything. */
 export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, action: QuotationAction,
-  readPdf = getDocumentBuffer): Promise<QuotationDecision> {
+  readPdf = getDocumentBuffer, options: { verifySourceBytes?: boolean } = {}): Promise<QuotationDecision> {
   const { quotation: d, translation: t } = s;
   const issues: QuotationIssue[] = [];
   const add = (code: string, message: string, section: QuotationIssue["target"]["section"]) => issues.push(quotationIssue(code, message, section));
@@ -18,7 +20,7 @@ export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, ac
   if (d.accountingState === "superseded") add("QUOTATION_REPLACED", "This quotation has been replaced. Open its replacement.", "lifecycle");
   if (["void", "cancelled"].includes(d.status) || d.signOffStage === "void") add("QUOTATION_VOID", "This quotation has been cancelled.", "lifecycle");
   const version = quotationDecisionVersion(s);
-  const result = () => ({ action, version, allowed: !issues.some(i => i.severity === "blocker"), issues });
+  const result = () => ({ action, version, contentVersion: quotationPackageVersion(s), allowed: !issues.some(i => i.severity === "blocker"), issues });
   if (action === "save_content") return result(); // Financial incompleteness cannot veto wording.
   const reviewing = action === "approve";
   if (reviewing && (!t || !["draft", "edited", "finalised"].includes(t.status)))
@@ -29,7 +31,7 @@ export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, ac
     if (s.baseline) {
       if (s.baseline.storageKey !== d.pdfStorageKey)
         add("SOURCE_DIGEST_MISMATCH", "Original PDF no longer matches the confirmed source. Review the current source before approval.", "source");
-      else {
+      else if (options.verifySourceBytes !== false) {
         try {
           const digest = createHash("sha256").update(await readPdf(s.baseline.storageKey)).digest("hex");
           if (digest !== s.baseline.sourceDigest) add("SOURCE_DIGEST_MISMATCH", "Original PDF bytes no longer match the locked source receipt. Approval and sharing are blocked.", "source");
@@ -45,7 +47,7 @@ export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, ac
       if (parsed.nativeTableRecovery && (Math.round(Number(d.amountHt) * 100) !== Math.round(parsed.nativeTableRecovery.amountHt * 100)
         || Math.round(Number(d.amountTtc) * 100) !== Math.round(parsed.nativeTableRecovery.amountTtc * 100)))
         add("HEADER_TOTAL_MISMATCH", "Working header totals differ from the independently read original totals. Use Edit working quotation to reconcile the source.", "financial");
-      try {
+      if (options.verifySourceBytes !== false) try {
         if (!d.pdfStorageKey || createHash("sha256").update(await readPdf(d.pdfStorageKey)).digest("hex") !== parsed.pricedItemVerification.sourceDigest)
           add("SOURCE_DIGEST_MISMATCH", "The original PDF no longer matches its verification. Review the current source before approval.", "source");
       } catch { add("SOURCE_UNAVAILABLE", "The original PDF cannot be verified right now. Retry before approval.", "source"); }
@@ -64,5 +66,12 @@ export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, ac
     if (d.accountingState === "provisional") add("ACCOUNTING_PROVISIONAL", "Resolve the provisional quotation before publishing it.", "lifecycle");
     if (t?.status !== "finalised") add("TRANSLATION_NOT_APPROVED", "Review and approve the translation before sharing it.", "translation");
   }
+  if (action === "sign") {
+    issues.push(...translationSnapshotIssues(s));
+    for (const issue of quotationSigningIssues(d, t?.status ?? null, false))
+      if (!issues.some(existing => existing.code === issue.code)) issues.push(issue);
+  }
+  if (options.verifySourceBytes === false && (s.baseline || (d.aiExtractedData as ParsedDocument | null)?.pricedItemVerification))
+    issues.push({ ...quotationIssue("SOURCE_RECHECK_AT_COMMIT", "Original PDF bytes will be rechecked before approval or sending.", "source"), severity: "info" });
   return result();
 }

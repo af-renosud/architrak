@@ -8,7 +8,7 @@ import {
   buildProjectShareUrl,
   computeTokenExpiry,
   isTokenExpired,
-  getPublishBlockReason,
+  publishReviewedQuotation,
   decryptShareUrl,
 } from "../services/client-project-share";
 import {
@@ -301,21 +301,8 @@ router.post(
     if (!devis || devis.projectId !== projectId) {
       return res.status(404).json({ message: "Devis not found in this project" });
     }
-    const blockReason = await getPublishBlockReason(devis);
-    if (blockReason) return res.status(409).json({ message: blockReason });
-    await storage.publishDevisToProjectShare({
-      tokenId: active.id,
-      devisId: devis.id,
-      publishedByUserId: userId ? Number(userId) : undefined,
-    });
-    await recordShareAudit({
-      projectId,
-      action: "publish",
-      tokenId: active.id,
-      devisId: devis.id,
-      actorUserId: userId ? Number(userId) : null,
-      detail: (actor) => `Devis ${devis.devisCode} publié sur le lien projet par ${actor}.`,
-    });
+    const result = await publishReviewedQuotation(projectId, active.id, devis.id, userId ? Number(userId) : null);
+    if (!result.ok) return res.status(409).json({ message: result.message, ...("decision" in result ? { decision: result.decision } : {}) });
     res.json({ ok: true, devisId: devis.id });
   },
 );

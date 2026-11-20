@@ -2,6 +2,7 @@
 // tests; these in-memory fixtures exercise only lot assignment invariants.
 vi.mock("../services/quotation-approval-guard", () => ({
   quotationApprovalBlocker: vi.fn(async () => null),
+  quotationActionDecision: vi.fn(async () => ({ allowed: true, version: "fixture", issues: [] })),
 }));
 vi.mock("../services/architect-quotation-correction", () => ({
   hasQuotationSourceBaseline: vi.fn(async () => false), hasArchitectCorrection: vi.fn(async () => false), architectFinancialBoundary: vi.fn(async () => null),

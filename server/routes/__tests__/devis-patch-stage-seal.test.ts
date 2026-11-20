@@ -4,6 +4,17 @@ vi.mock("../../services/architect-quotation-correction", () => ({
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
 import express from "express";
 import type { AddressInfo } from "net";
+vi.mock("../../services/quotation-decision-snapshot", async importOriginal => ({
+  ...await importOriginal<typeof import("../../services/quotation-decision-snapshot")>(),
+  loadQuotationDecisionSnapshot: async (id: number) => {
+    const { storage } = await import("../../storage");
+    const quotation = await storage.getDevis(id);
+    if (!quotation) return null;
+    return { quotation, lines: await storage.getDevisLineItems(id) ?? [],
+      translation: await storage.getDevisTranslation(id), archived: false, baseline: null, hasCorrection: false,
+      draft: { lines: [], discountHt: "0.00" } };
+  },
+}));
 
 /**
  * Route-level pin for the Task #257 stage seal on the generic
@@ -77,7 +88,7 @@ vi.mock("../../communications/devis-translation-generator", () => ({
   generateCombinedPdf: vi.fn(),
   getValidatedCachedPdfKey: vi.fn(),
 }));
-vi.mock("../../storage/object-storage", () => ({ getDocumentStream: vi.fn() }));
+vi.mock("../../storage/object-storage", () => ({ getDocumentStream: vi.fn(), getDocumentBuffer: vi.fn(async () => Buffer.from("fixture")) }));
 vi.mock("../../middleware/upload", () => ({
   upload: { single: () => (_req: unknown, _res: unknown, next: () => void) => next() },
 }));
@@ -157,8 +168,10 @@ describe("PATCH /api/devis/:id — Task #257 stage seal", () => {
       },
     } }));
     const res = await patchStage("approved_for_signing");
-    expect(res.status).toBe(409);
-    expect((await res.json()).code).toBe("quotation_source_review_required");
+    const body = await res.json();
+    expect(res.status, JSON.stringify(body)).toBe(409);
+    expect(body.decision.allowed).toBe(false);
+    expect(body.decision.issues.some((i: { target: { section: string } }) => i.target.section === "source")).toBe(true);
     expect(updateDevis).not.toHaveBeenCalled();
   });
   it("409s a forward jump approved_for_signing → sent_to_client with code + currentStage", async () => {

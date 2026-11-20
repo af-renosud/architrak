@@ -11,6 +11,7 @@ export interface QuotationIssue {
 export interface QuotationDecision {
   action: QuotationAction;
   version: string;
+  contentVersion?: string;
   allowed: boolean;
   issues: QuotationIssue[];
 }

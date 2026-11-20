@@ -2,6 +2,10 @@ import { storage } from "../storage";
 import { evaluateInsuranceMirrorPreloaded } from "./insurance-verdict";
 import type { Devis } from "@shared/schema";
 import { contractorQuestionSnapshot } from "./contractor-question-authorization";
+import { quotationSigningIssues } from "@shared/quotation-signing-decision";
+import { quotationIssue, type QuotationDecision, type QuotationIssue } from "@shared/quotation-decision";
+import { loadProjectQuotationDecisionSnapshots } from "./quotation-decision-snapshot";
+import { evaluateQuotationDecision } from "./quotation-decision";
 
 /**
  * Task #374 — batch, read-only readiness derivation for the devis list
@@ -46,6 +50,8 @@ export interface DevisReadiness {
   readyToSend: boolean;
   /** Human-readable failed predicates (empty when readyToSend). */
   blockers: string[];
+  issues?: QuotationIssue[];
+  version?: string;
   insuranceOk: boolean;
   insuranceOverridden: boolean;
   insuranceReason: string | null;
@@ -53,6 +59,7 @@ export interface DevisReadiness {
 
 import { hasRecordedSignature } from "@shared/devis-stage-recovery";
 export interface DeriveReadinessInput {
+  sourceDecision?: QuotationDecision;
   devis: Pick<
     Devis,
     | "id"
@@ -103,51 +110,31 @@ function deriveSignature(input: DeriveReadinessInput): SignatureState {
 
 export function deriveDevisReadiness(input: DeriveReadinessInput): DevisReadiness {
   const d = input.devis;
-  const isModeB = d.invoicingMode === "mode_b";
   const translationStatus = input.translationStatus ?? "missing";
-  const content = (d.aiExtractedData as { quotationVerification?: { verified: boolean }; illustratedRecovery?: unknown } | null);
   const signature = deriveSignature(input);
   const sent =
     signature !== "not_sent" ||
     d.signOffStage === "sent_to_client" ||
     d.signOffStage === "client_signed_off";
 
-  const blockers: string[] = [];
-  if (signature === "signed") blockers.push("Already signed — use the existing signed copy, not a new signature request.");
-  if (d.signOffStage !== "approved_for_signing") {
-    blockers.push(`Stage is "${d.signOffStage}" — must reach "Approved for signing"`);
-  }
+  const issues = [...(input.sourceDecision?.issues ?? []), ...quotationSigningIssues(d, translationStatus)]
+    .filter((issue, index, all) => all.findIndex(i => i.code === issue.code && i.key === issue.key) === index);
+  const add = (code: string, message: string) => issues.push(quotationIssue(code, message, "signature"));
   if (input.openContractorChecks > 0) {
-    blockers.push(
+    add("QUESTIONS_AUTHORISATION_REQUIRED",
       input.openContractorChecks === 1
         ? "1 contractor check is still open"
         : `${input.openContractorChecks} contractor checks are still open`,
     );
   }
-  // The send route requires a translated PDF (draft/edited/finalised) for
-  // EVERY invoicing mode — the envelope PDF is the translation.
-  if ((content?.illustratedRecovery || content?.quotationVerification) && !content.quotationVerification?.verified) {
-    blockers.push("Source specification coverage is unverified");
-  }
-  const translationReady =
-    translationStatus === "draft" ||
-    translationStatus === "edited" ||
-    translationStatus === "finalised";
-  if (!translationReady) {
-    blockers.push(`Translated PDF not generated (currently ${translationStatus})`);
-  } else if (isModeB && translationStatus !== "finalised") {
-    blockers.push(`Translation not finalised (currently ${translationStatus})`);
-  }
-  const hasLot = d.lotId != null || Boolean((d.lotRefText ?? "").trim());
-  if (!hasLot) blockers.push("Lot reference missing");
-  if (!(d.descriptionUk ?? "").trim()) blockers.push("English description missing");
   if (!input.clientContactPresent) {
-    blockers.push("Client contact name/email missing on the project");
+    add("RECIPIENT_MISSING", "Client contact name/email missing on the project");
   }
   const insuranceOk = input.insurance.ok || input.insuranceOverridden;
   if (!insuranceOk) {
-    blockers.push(`Insurance: ${input.insurance.reason}`);
+    add("INSURANCE_CHECK_REQUIRED", `Insurance: ${input.insurance.reason}`);
   }
+  const blockers = issues.filter(i => i.severity === "blocker").map(i => i.message);
 
   return {
     devisId: d.id,
@@ -161,6 +148,8 @@ export function deriveDevisReadiness(input: DeriveReadinessInput): DevisReadines
     sent,
     readyToSend: blockers.length === 0,
     blockers,
+    issues,
+    version: input.sourceDecision?.version,
     insuranceOk,
     insuranceOverridden: input.insuranceOverridden,
     insuranceReason: input.insurance.ok ? null : input.insurance.reason,
@@ -194,7 +183,12 @@ export async function getProjectDevisReadiness(
     (project?.clientContactName ?? "").trim() && (project?.clientContactEmail ?? "").trim(),
   );
   const out: Record<number, DevisReadiness> = {};
+  const snapshots = await loadProjectQuotationDecisionSnapshots(projectId);
   for (const d of devisList) {
+    const snapshot = snapshots.get(d.id);
+    const sourceDecision: QuotationDecision = snapshot
+      ? await evaluateQuotationDecision(snapshot, "sign", undefined, { verifySourceBytes: false })
+      : { action: "sign", version: "", allowed: false, issues: [quotationIssue("VERIFICATION_UNAVAILABLE", "Quotation verification is unavailable. Refresh before sending.", "source")] };
     const receipt = contractorQuestionSnapshot(d.id, contractorChecks.filter(c => c.devisId === d.id));
     const insurance = evaluateInsuranceMirrorPreloaded(
       contractorById.get(d.contractorId),
@@ -202,8 +196,9 @@ export async function getProjectDevisReadiness(
       d.lotId != null ? (lotNumberById.get(d.lotId) ?? null) : null,
     );
     out[d.id] = deriveDevisReadiness({
-      devis: d,
-      translationStatus: translations[d.id] ?? null,
+      devis: snapshot?.quotation ?? d,
+      translationStatus: snapshot?.translation?.status ?? translations[d.id] ?? null,
+      sourceDecision,
       openContractorChecks: receipt.openCount,
       openClientChecks: clientChecks[d.id] ?? 0,
       clientContactPresent,

@@ -17,7 +17,8 @@ import { processDevisUpload } from "../services/devis-upload.service";
 import { enqueueReconciliation } from "../services/reconciliation/reconciliation-queue.service";
 import { rescrapeDevis } from "../services/devis-rescrape.service";
 import { startQuotationRescrape } from "../services/quotation-rescrape-jobs";
-import { quotationApprovalBlocker } from "../services/quotation-approval-guard";
+import { quotationActionDecision } from "../services/quotation-approval-guard";
+import { commitQuotationApprovalStage } from "../services/quotation-stage-commit";
 import { translationCoverageBlocker } from "../services/quotation-translation-coverage";
 import { commitTranslationApproval } from "../services/translation-approval-commit";
 import { quotationReviewReadiness } from "../services/quotation-review-readiness";
@@ -82,7 +83,7 @@ import {
   LineContextError,
 } from "../services/devis-line-context";
 import { CONTEXT_ASSET_MAX_BYTES } from "@shared/context-doc";
-import { architectFinancialBoundary, hasArchitectCorrection, hasQuotationSourceBaseline } from "../services/architect-quotation-correction";
+import { hasArchitectCorrection, hasQuotationSourceBaseline } from "../services/architect-quotation-correction";
 import { getReplacementHistory, getReplacementOptions, replaceQuotation, replaceQuotationSchema, ReplacementError } from "../services/quotation-replacement.service";
 import { getCarryForwardPreview, recoverCarryForward } from "../services/quotation-carry-forward";
 import { carryForwardSchema } from "@shared/quotation-carry-forward";
@@ -888,6 +889,7 @@ router.patch(
     if (!user) return res.status(401).json({ message: "Authentication required" });
 
     const before = await storage.getDevis(id);
+    let approvalStageVersion: string | undefined;
     if (["pdfStorageKey", "aiExtractedData"].some(key => req.body[key] !== undefined)) {
       return res.status(409).json({ message: "Original quotation evidence cannot be replaced through ordinary editing." });
     }
@@ -947,8 +949,11 @@ router.patch(
         });
       }
       if (nextIdx >= STAGE_ORDER.indexOf("approved_for_signing") && nextIdx > prevIdx) {
-        const sourceBlocker = await quotationApprovalBlocker(id);
-        if (sourceBlocker) return res.status(409).json({ code: "quotation_source_review_required", message: sourceBlocker });
+        const decision = await quotationActionDecision(id, "advance");
+        if (!decision.allowed) return res.status(409).json({ code: decision.issues[0].code, message: decision.issues[0].message, decision });
+        if (Object.keys(req.body).some(key => key !== "signOffStage" && req.body[key] !== (before as any)[key]))
+          return res.status(409).json({ code: "SAVE_BEFORE_STAGE_APPROVAL", message: "Save quotation changes before approving its workflow stage. No changes have been applied." });
+        approvalStageVersion = decision.version;
       }
 
       if (nextIdx >= SENT_INDEX && nextIdx > prevIdx) {
@@ -1132,7 +1137,7 @@ router.patch(
       Object.assign(patchBody, result.updates);
     }
 
-    const d = req.body.signOffStage !== undefined
+    const d = approvalStageVersion ? await commitQuotationApprovalStage(id, approvalStageVersion) : req.body.signOffStage !== undefined
       ? await storage.updateDevis(id, normalizeDevisText(patchBody), before.signOffStage)
       : await storage.updateDevis(id, normalizeDevisText(patchBody));
     if (!d) return res.status(409).json({ message: "Quotation changed. Refresh before editing its workflow stage." });
@@ -1360,16 +1365,14 @@ router.post(
       if (devis.status !== "draft") return res.status(400).json({ message: "Only draft devis can be confirmed" });
 
       const corrections = { ...req.body };
-      const sourceBlocker = await quotationApprovalBlocker(devis.id);
-      if (sourceBlocker) return res.status(409).json({ code: "quotation_source_review_required", message: sourceBlocker });
+      const decision = await quotationActionDecision(devis.id, "advance");
+      if (!decision.allowed) return res.status(409).json({ code: decision.issues[0].code, message: decision.issues[0].message, decision });
       if ((devis.aiExtractedData as any)?.pricedItemVerification && (
         corrections.amountHt != null && roundCurrency(corrections.amountHt) !== roundCurrency(Number(devis.amountHt))
         || corrections.amountTtc != null && roundCurrency(corrections.amountTtc) !== roundCurrency(Number(devis.amountTtc))))
         return res.status(409).json({ code: "quotation_source_review_required",
           message: "Use Edit working quotation to reconcile changed figures with the original PDF before confirming." });
       if (await hasArchitectCorrection(devis.id)) {
-        const financialBlocker = await architectFinancialBoundary(devis.id);
-        if (financialBlocker) return res.status(409).json({ code: "source_ttc_reconciliation_required",message: financialBlocker });
         if (corrections.descriptionFr != null && corrections.descriptionFr !== devis.descriptionFr
           || corrections.amountHt != null && roundCurrency(corrections.amountHt) !== roundCurrency(Number(devis.amountHt))
           || corrections.amountTtc != null && roundCurrency(corrections.amountTtc) !== roundCurrency(Number(devis.amountTtc))) {

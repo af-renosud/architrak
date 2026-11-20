@@ -1,7 +1,6 @@
-import { quotationApprovalBlocker } from "../services/quotation-approval-guard";
+import { quotationActionDecision } from "../services/quotation-approval-guard";
 import { withQuotationSignatureLock } from "../services/quotation-signature-lock";
 import { hasArchitectCorrection } from "../services/architect-quotation-correction";
-import { translationCoverageBlocker } from "../services/quotation-translation-coverage";
 /**
  * Archisign envelope orchestration endpoints (AT4, contract §1.2 / §3.5).
  *
@@ -43,6 +42,7 @@ import { validateRequest } from "../middleware/validate";
 import {
   createEnvelope,
   sendEnvelope,
+  getEnvelopeStatus,
   ArchisignError,
   ArchisignConfigError,
   assertPdfFetchUrlTtl,
@@ -109,8 +109,8 @@ router.get(
     const devisId = Number(req.params.id);
     const d = await storage.getDevis(devisId);
     if (!d) return res.status(404).json({ message: "Devis not found" });
-    const coverageBlocker = await quotationApprovalBlocker(devisId);
-    if (coverageBlocker) return res.status(409).json({ message: coverageBlocker, code: "quotation_content_unverified" });
+    const decision = await quotationActionDecision(devisId, "advance");
+    if (!decision.allowed) return res.status(409).json({ message: decision.issues[0].message, code: decision.issues[0].code, decision });
 
     const envelopeId = d.archisignEnvelopeId ?? null;
     const hasMessage = Boolean((d.archisignSignerMessage ?? "").trim());
@@ -183,7 +183,7 @@ router.post(
   validateRequest({ params: idParams, body: sendBody }),
   withQuotationSignatureLock(async (req, res) => {
     const devisId = Number(req.params.id);
-    const personalMessage = (req.body as { message?: string } | undefined)?.message;
+    let personalMessage = (req.body as { message?: string } | undefined)?.message;
     const authorization = (req.body as z.infer<typeof sendBody>).contractorQuestionAuthorization;
     const userId = req.session?.userId;
     if (!userId) return res.status(401).json({ message: "Authentication required" });
@@ -202,10 +202,8 @@ router.post(
         message: "This quotation already has recorded signature evidence. Restore its signed status instead of requesting another signature." });
     }
     // ---- Pre-condition checks ------------------------------------------
-    const extractionBlocker = await quotationApprovalBlocker(devisId);
-    if (extractionBlocker) return res.status(409).json({ message: extractionBlocker, code: "quotation_content_unverified" });
-    const translationBlocker = await translationCoverageBlocker(devisId);
-    if (translationBlocker) return res.status(409).json({ message: translationBlocker, code: "translation_content_unverified" });
+    const quotationDecision = await quotationActionDecision(devisId, "sign");
+    if (!quotationDecision.allowed) return res.status(409).json({ message: quotationDecision.issues[0].message, code: quotationDecision.issues[0].code, decision: quotationDecision });
     if (d.signOffStage !== "approved_for_signing") {
       return res.status(409).json({
         message:
@@ -226,7 +224,26 @@ router.post(
     // client would have cleared archisignEnvelopeId via the resend flow
     // — out of scope for AT4 — so we 409 only on the truly
     // unrecoverable shape: stage advanced but envelopeId still set.
-    const resumingExistingEnvelope = Boolean(d.archisignEnvelopeId);
+    let resumingExistingEnvelope = Boolean(d.archisignEnvelopeId);
+    if (resumingExistingEnvelope) {
+      const receipt = await storage.getSignatureQuestionReceipt(devisId, d.archisignEnvelopeId!);
+      if (receipt?.quotationContentVersion && receipt.quotationContentVersion !== quotationDecision.contentVersion) {
+        let providerStatus: string;
+        try { providerStatus = await getEnvelopeStatus(d.archisignEnvelopeId!); }
+        catch {
+          return res.status(503).json({ code: "SIGNATURE_RECOVERY_UNAVAILABLE",
+            message: "The quotation changed. We could not confirm whether its previous signature invitation was sent. Nothing was replaced or sent; retry when the signature service is available." });
+        }
+        if (providerStatus !== "draft") return res.status(409).json({ code: "SIGNATURE_ALREADY_DISPATCHED",
+          message: `The signature service reports this envelope as ${providerStatus}, not an unsent draft. It cannot safely be replaced automatically. Review the existing signature request before making another one.` });
+        if (!(await storage.retireUnsentSignatureEnvelope(devisId, d.archisignEnvelopeId!, userId, providerStatus)))
+          return res.status(409).json({ code: "QUOTATION_CHANGED", message: "Quotation changed during recovery. Refresh and retry." });
+        personalMessage ||= d.archisignSignerMessage ?? undefined;
+        Object.assign(d, { archisignEnvelopeId: null, archisignAccessUrl: null, archisignEnvelopeStatus: null,
+          archisignPinnedPdfStorageKey: null, archisignOtpDestination: null, archisignEnvelopeExpiresAt: null });
+        resumingExistingEnvelope = false;
+      }
+    }
 
     // Task #257 — the written client context is mandatory on first send.
     // The Zod schema can't enforce this conditionally (the resume branch
@@ -546,6 +563,7 @@ router.post(
       subjectDrift = Boolean(persistCreate.archisignSubjectDriftAt);
       bodyDrift = Boolean(persistCreate.archisignBodyDriftAt);
       await storage.persistSignatureQuestionReceipt(devisId, persistCreate, userId, {
+        quotationContentVersion: quotationDecision.contentVersion,
         envelopeId: createResp.envelopeId, snapshot: questionReceipt.snapshot,
         fullSnapshot: questionReceipt.fullSnapshot, authorization: authorizationAudit,
       });
@@ -567,6 +585,14 @@ router.post(
       code: "signature_question_snapshot_changed",
       message: "Contractor questions changed while preparing the envelope. No signature invitation was sent.",
     });
+
+    const currentQuotationDecision = await quotationActionDecision(devisId, "sign");
+    const preparedReceipt = await storage.getSignatureQuestionReceipt(devisId, envelopeId);
+    if (!currentQuotationDecision.allowed || currentQuotationDecision.contentVersion !== quotationDecision.contentVersion ||
+      (preparedReceipt?.quotationContentVersion && preparedReceipt.quotationContentVersion !== currentQuotationDecision.contentVersion)) {
+      return res.status(409).json({ code: "QUOTATION_PACKAGE_CHANGED", decision: currentQuotationDecision,
+        message: "Quotation content or source evidence changed while preparing this signature package. No invitation was sent. Review the latest quotation, then retry. We will check the previous envelope with the signature service and rebuild it only if it was never sent." });
+    }
 
     try {
       await sendEnvelope(envelopeId);

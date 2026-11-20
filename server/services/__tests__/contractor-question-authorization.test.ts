@@ -3,6 +3,16 @@ import type { DevisCheck } from "@shared/schema";
 import { contractorQuestionSnapshot } from "../contractor-question-authorization";
 import { getProjectDevisReadiness } from "../devis-readiness";
 import { storage } from "../../storage";
+vi.mock("../quotation-decision-snapshot", async original => ({
+  ...await original<typeof import("../quotation-decision-snapshot")>(),
+  loadProjectQuotationDecisionSnapshots: async (projectId: number) => {
+    const { storage } = await import("../../storage");
+    const rows = await storage.getDevisByProject(projectId);
+    return new Map(rows.map(quotation => [quotation.id, { quotation, lines: [],
+      translation: { status: "finalised", headerTranslated: { humanReviewed: true } },
+      archived: false, baseline: null, hasCorrection: false, draft: { lines: [], discountHt: "0.00" } }]));
+  },
+}));
 
 vi.mock("../../storage", () => ({
   storage: {

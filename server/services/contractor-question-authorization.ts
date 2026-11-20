@@ -24,6 +24,7 @@ export function contractorQuestionSnapshot(devisId: number, checks: DevisCheck[]
 }
 
 export interface SignatureQuestionReceipt {
+  quotationContentVersion?: string;
   envelopeId: string;
   snapshot: string;
   fullSnapshot: ReturnType<typeof contractorQuestionSnapshot>["fullSnapshot"];

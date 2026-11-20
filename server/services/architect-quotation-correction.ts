@@ -9,9 +9,10 @@ import { hasSignedOrClosedEvidence } from "./quotation-source-guards";
 import { architectBaselineConfirmationSchema, architectCorrectionSaveSchema, correctionCents, financialProjection, previewCorrectionTotals } from "../../shared/architect-quotation";
 import type { ArchitectCorrectionDraft, ArchitectCorrectionLine, ArchitectCorrectionSnapshot } from "../../shared/architect-quotation";
 import { quotationFinancialIssues } from "../../shared/quotation-financial-decision";
+import type { QuotationIssue } from "../../shared/quotation-decision";
 
 export class ArchitectCorrectionError extends Error {
-  constructor(message: string, public status = 409, public code = "ARCHITECT_CORRECTION_CONFLICT") { super(message); }
+  constructor(message: string, public status = 409, public code = "ARCHITECT_CORRECTION_CONFLICT", public issues?: QuotationIssue[]) { super(message); }
 }
 type Reader = Pick<pg.PoolClient, "query">;
 interface State { quotation: any; lines: any[]; translation: any; baseline: any; state: any; archived: boolean; financial: boolean }
@@ -165,12 +166,10 @@ export function createArchitectCorrectionService(deps: { pool: pg.Pool; readPdf:
       }
       let computed: ReturnType<typeof previewCorrectionTotals> | null = null;
       if (financialChanged) {
-        if (!s.baseline) throw new ArchitectCorrectionError("Confirm the final TTC directly from the original PDF before a financial correction.", 422);
-        try { computed = previewCorrectionTotals(draft); } catch (e) {
-          throw new ArchitectCorrectionError(e instanceof Error ? e.message : "Invalid financial batch.", 422);
-        }
-        if (correctionCents(computed.ttc) !== correctionCents(s.baseline.ttc))
-          throw new ArchitectCorrectionError(`Computed TTC ${computed.ttc} does not match locked source TTC ${s.baseline.ttc}. No part of the batch was saved.`, 422, "TTC_MISMATCH");
+        const issues = quotationFinancialIssues(draft, s.baseline);
+        if (issues.length) throw new ArchitectCorrectionError(issues.map(i => i.message).join("\n"), 422,
+          issues.some(i => i.code === "SOURCE_TTC_MISMATCH") ? "TTC_MISMATCH" : issues[0].code, issues);
+        computed = previewCorrectionTotals(draft);
       }
       await client.query("SELECT set_config('renosud.architect_correction','on',true)");
       const savedLines: ArchitectCorrectionLine[] = [];
@@ -227,22 +226,13 @@ export function correctedFinancialBlocker(draft: ArchitectCorrectionDraft, basel
   return quotationFinancialIssues(draft, baseline, workingTotals).map(i => i.message).join("\n") || null;
 }
 export async function architectFinancialBoundary(devisId: number) {
-  // Confirmation is independent of editing: an unchanged reviewed quotation
-  // must receive the same financial/source checks as a corrected one.
-  if (!await hasQuotationSourceBaseline(devisId)) return null;
-  const snapshot = await architectCorrectionService.get(devisId);
-  if (snapshot.blockedReason) return snapshot.blockedReason;
-  if (snapshot.baseline) {
-    const receipt = (await pool.query(`SELECT b.source_storage_key,d.pdf_storage_key
-      FROM quotation_source_baselines b JOIN devis d ON d.id=b.devis_id WHERE b.devis_id=$1`, [devisId])).rows[0];
-    if (!receipt || receipt.source_storage_key !== receipt.pdf_storage_key)
-      return "Original PDF no longer matches the confirmed source. Review the current source before approval.";
-    try {
-      const digest = (await pdfReceipt(getDocumentBuffer, receipt.source_storage_key)).digest;
-      if (digest !== snapshot.baseline.sourceDigest) return "Original PDF bytes no longer match the locked source receipt. Approval and sharing are blocked.";
-    } catch { return "The original PDF receipt cannot currently be verified. Restore source access and retry; no content was approved."; }
-  }
-  return correctedFinancialBlocker(snapshot.draft, snapshot.baseline, snapshot.workingTotals);
+  // Lazy imports avoid a cycle with the snapshot's pure draft projection.
+  const { loadQuotationDecisionSnapshot } = await import("./quotation-decision-snapshot");
+  const { evaluateQuotationDecision } = await import("./quotation-decision");
+  const snapshot = await loadQuotationDecisionSnapshot(devisId);
+  if (!snapshot?.baseline) return null;
+  const decision = await evaluateQuotationDecision(snapshot, "approve");
+  return decision.issues.find(i => i.severity === "blocker" && i.target.section !== "translation")?.message ?? null;
 }
 export async function assertOriginalReceiptBytes(devisId: number, storageKey: string, bytes: Buffer) {
   const row = (await pool.query("SELECT source_storage_key,source_digest FROM quotation_source_baselines WHERE devis_id=$1", [devisId])).rows[0];

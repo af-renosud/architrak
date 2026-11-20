@@ -8,6 +8,12 @@ import {
   isTokenExpired,
 } from "./client-checks";
 import { encryptShareUrl, decryptShareUrl } from "./share-url-crypto";
+import { quotationActionDecision } from "./quotation-approval-guard";
+import { evaluateQuotationDecision } from "./quotation-decision";
+import { readQuotationDecisionSnapshot } from "./quotation-decision-snapshot";
+import { db } from "../db";
+import { and, eq, sql } from "drizzle-orm";
+import { clientProjectShareTokens, clientProjectShareDevis, clientProjectShareAudit } from "@shared/schema";
 
 export { encryptShareUrl, decryptShareUrl };
 
@@ -82,20 +88,31 @@ export function buildProjectShareUrl(baseUrl: string, rawToken: string): string 
  * Returns null when publishable, otherwise a human-readable refusal.
  */
 export async function getPublishBlockReason(devis: Devis): Promise<string | null> {
-  if (devis.signOffStage === "void" || devis.status === "void") {
-    return "This devis is void and cannot be shared with the client.";
-  }
-  if (devis.accountingState === "provisional") {
-    return "This devis is still provisional (pending reconciliation) and cannot be shared yet.";
-  }
-  if (devis.accountingState === "superseded") {
-    return "This devis has been superseded and cannot be shared with the client.";
-  }
-  const translation = await storage.getDevisTranslation(devis.id);
-  if (!translation || translation.status !== "finalised") {
-    return "The English translation must be finalised before this devis can be published to the client.";
-  }
-  return null;
+  const decision = await quotationActionDecision(devis.id, "client_link");
+  return decision.issues.find(i => i.severity === "blocker")?.message ?? null;
+}
+
+/** Publication is a decision AND a write under the quotation and token locks.
+ * Editing approval/context, replacement and token rotation cannot race disclosure. */
+export async function publishReviewedQuotation(projectId: number, tokenId: number, devisId: number, actorUserId: number | null) {
+  return db.transaction(async tx => {
+    await tx.execute(sql`SELECT id FROM devis WHERE id=${devisId} FOR UPDATE`);
+    const [token] = await tx.select().from(clientProjectShareTokens).where(and(
+      eq(clientProjectShareTokens.id, tokenId), eq(clientProjectShareTokens.projectId, projectId))).for("share");
+    if (!token || token.revokedAt || isTokenExpired(token)) return { ok: false as const, message: "Client link changed or expired. Refresh before publishing." };
+    await tx.execute(sql`SELECT id FROM projects WHERE id=${projectId} FOR SHARE`);
+    await tx.execute(sql`SELECT id FROM devis_line_items WHERE devis_id=${devisId} FOR SHARE`);
+    await tx.execute(sql`SELECT devis_id FROM devis_translations WHERE devis_id=${devisId} FOR SHARE`);
+    const snapshot = await readQuotationDecisionSnapshot(tx, devisId);
+    if (!snapshot || snapshot.quotation.projectId !== projectId) return { ok: false as const, message: "Quotation not found in this project." };
+    const decision = await evaluateQuotationDecision(snapshot, "client_link");
+    if (!decision.allowed) return { ok: false as const, message: decision.issues.find(i => i.severity === "blocker")!.message, decision };
+    const inserted = await tx.insert(clientProjectShareDevis).values({ tokenId, devisId, publishedByUserId: actorUserId })
+      .onConflictDoNothing().returning();
+    if (inserted.length) await tx.insert(clientProjectShareAudit).values({ projectId, tokenId, devisId, actorUserId,
+      action: "publish", detail: `Devis ${snapshot.quotation.devisCode} publié après vérification de la version ${decision.version}.` });
+    return { ok: true as const };
+  });
 }
 
 /**

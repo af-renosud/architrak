@@ -27,6 +27,16 @@ Review versions must bind independent source evidence as well as visible content
 
 **How to apply:** Bind source confirmation and correction metadata into the reviewed decision version, and compare it again under the approval locks. Keep fixtures for source evidence independent from tests that deliberately installed invalid extraction.
 
+List readiness must not download every original PDF, but deferred byte checks are not proof of verification. Authoritative approval, publication and signature actions still verify the source. Signature package content versions must ignore generated PDF-cache and envelope transport metadata while including authored content, context versions and source evidence.
+
+**Why:** List refreshes otherwise perform repeated object-storage work; conversely, comparing complete records while constructing an envelope creates false stale-version conflicts from the application's own transport writes.
+
+**How to apply:** Use the database-only decision projection for cards, explicitly identify deferred verification, and keep content-bound receipts for new signature packages so a retry cannot send an outdated package.
+
+Stale signature-package guards need a recovery path, not just a rejection. Reconcile provider status before retiring an outdated envelope; only a definitely unsent draft can be rebuilt automatically, preserving its original receipt and an audit of retirement.
+
+**Why:** Persisting an envelope before checking for content changes otherwise traps every retry on the same stale receipt. A failed send response is not proof that the provider never sent it.
+
 Line review colours and contractor questions have independent lifecycles. Reflagging or editing a line must never replace authored question wording, and unflagging alone must never withdraw it. Withdrawal is explicit and reversible; sent wording is immutable and amendments belong in the conversation.
 
 **Why:** Operators could not readily reopen saved questions, and colour/progress/note updates could silently overwrite or hide them. A saved draft is valuable authored content even when no conversation messages exist.

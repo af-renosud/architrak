@@ -417,6 +417,12 @@ export async function sendEnvelope(envelopeId: string): Promise<SendEnvelopeResp
   return archisignFetch<SendEnvelopeResponse>("POST", `/api/v1/envelopes/${encodeURIComponent(envelopeId)}/send`);
 }
 
+/** Contract read endpoint; fail closed on unknown shapes or states. */
+export async function getEnvelopeStatus(envelopeId: string): Promise<string> {
+  const response = await archisignFetch<unknown>("GET", `/api/v1/envelopes/${encodeURIComponent(envelopeId)}`);
+  return z.object({ status: z.enum(["draft", "sent", "viewed", "queried", "signed", "declined", "expired"]) }).parse(response).status;
+}
+
 /**
  * GET /api/v1/envelopes/:id/signed-pdf-url — re-mint the signed-PDF URL
  * after the snapshot's TTL (15 min default per §3.5.3) has elapsed.

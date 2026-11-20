@@ -39,7 +39,7 @@ for (const operation of ["get", "save", "confirm"] as const) {
           : await service.confirm(id, req.body, actorId);
       res.json(result);
     } catch (error) {
-      if (error instanceof ArchitectCorrectionError) return res.status(error.status).json({ message: error.message, code: error.code });
+      if (error instanceof ArchitectCorrectionError) return res.status(error.status).json({ message: error.message, code: error.code, ...(error.issues ? { issues: error.issues } : {}) });
       next(error);
     }
   });

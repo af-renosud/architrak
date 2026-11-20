@@ -6,7 +6,25 @@ import { pool } from "../db";
 import { storage } from "../storage";
 import type { DevisTranslationLine, DevisTranslationHeader } from "@shared/schema";
 import { normalizeQuotationText } from "../../shared/quotation-content-coverage";
-import { hasArchitectCorrection } from "./architect-quotation-correction";
+import type { QuotationDecisionSnapshot } from "./quotation-decision-snapshot";
+import { quotationIssue, type QuotationIssue } from "@shared/quotation-decision";
+
+/** Human-reviewed wording is not forced back through a semantic model.
+ * Machine translation evidence, when required, belongs to this exact snapshot. */
+export function translationSnapshotIssues(s: QuotationDecisionSnapshot): QuotationIssue[] {
+  if (s.hasCorrection || !(s.quotation.aiExtractedData as any)?.quotationVerification) return [];
+  const translation = s.translation;
+  if (translation?.status === "finalised" && (translation.headerTranslated as DevisTranslationHeader | null)?.humanReviewed) return [];
+  const target = (translation?.lineTranslations ?? []) as DevisTranslationLine[];
+  const header = translation?.headerTranslated as DevisTranslationHeader | null;
+  const sourceHeader = s.quotation.descriptionFr ?? "";
+  const issues = [...translationCriticalIssues(s.lines, target), ...translationHeaderIssues(sourceHeader, s.lines, header)];
+  if (issues.length) return issues.map((message, index) =>
+    quotationIssue("TRANSLATION_CONTENT_UNVERIFIED", message, "translation", `translation-${index}`));
+  const fingerprint = translationCoverageFingerprint(sourceHeader, s.lines, target, header);
+  return s.translationVerificationFingerprints?.includes(fingerprint) ? [] : [
+    quotationIssue("TRANSLATION_REVIEW_REQUIRED", "Review and approve the saved translation, or re-translate to obtain machine verification for this version.", "translation")];
+}
 
 const digest = stableQuotationDigest;
 const numbers = (s: string) => (s.match(/\d+(?:[.,]\d+)?/g) ?? []).map(n => n.replace(",", ".")).sort();
@@ -99,19 +117,8 @@ ${JSON.stringify(batch.map(s => ({ lineNumber: s.lineNumber, french: s.descripti
 }
 
 export async function translationCoverageBlocker(devisId: number) {
-  if (await hasArchitectCorrection(devisId)) return null;
-  const quotation = await storage.getDevis(devisId);
-  if (!(quotation?.aiExtractedData as any)?.quotationVerification) return null;
-  const translation = await storage.getDevisTranslation(devisId);
-  if (translation?.status === "finalised" && (translation.headerTranslated as DevisTranslationHeader | null)?.humanReviewed) return null;
-  const source = await storage.getDevisLineItems(devisId);
-  const translations = (translation?.lineTranslations ?? []) as DevisTranslationLine[];
-  const header = translation?.headerTranslated as DevisTranslationHeader | null;
-  const sourceHeader = quotation?.descriptionFr ?? "";
-  const issues = [...translationCriticalIssues(source, translations), ...translationHeaderIssues(sourceHeader, source, header)];
-  if (issues.length) return issues.join(" ");
-  const fingerprint = translationCoverageFingerprint(sourceHeader, source, translations, header);
-  const { rows } = await pool.query(`SELECT 1 FROM quotation_extraction_events WHERE devis_id=$1
-    AND outcome='translation_verified' AND snapshot->>'fingerprint'=$2 LIMIT 1`, [devisId, fingerprint]);
-  return rows.length ? null : "Translation coverage has not been verified for this version. Re-translate before finalising.";
+  const { loadQuotationDecisionSnapshot } = await import("./quotation-decision-snapshot");
+  const snapshot = await loadQuotationDecisionSnapshot(devisId);
+  if (!snapshot) return "Quotation not found.";
+  return translationSnapshotIssues(snapshot).map(i => i.message).join(" ") || null;
 }
