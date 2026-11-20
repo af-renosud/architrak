@@ -18,7 +18,7 @@ export function LineContextGenerationAction({ devisId, lineItemId, context, disa
       {generate.isPending ? "Generating explanation…" : generate.isError ? "Retry explanation" : "Generate explanation"}
     </Button>}
     {generate.isPending && <div role="status" className="space-y-1"><p className="text-xs text-muted-foreground">Preparing an AI draft with sources…</p><Skeleton className="h-8 w-full" /></div>}
-    {generate.isError && <p role="alert" className="text-xs text-destructive">{generate.error.message}</p>}
+    {generate.isError && <p role="alert" className="text-xs text-destructive">{generate.error.message} This optional draft is unavailable; you can still write and save context yourself.</p>}
     {generate.data?.warning && <p role="status" className="text-xs text-amber-800 dark:text-amber-300">{generate.data.warning}</p>}
   </div>;
 }
@@ -29,14 +29,14 @@ export function ContextGenerationActions({ devisId, disabled, translationStatus,
   const work = useQuotationWork(devisId);
   const { state, start } = useContextGeneration(devisId, disabled, translationStatus);
   const progress = state.data;
-  return <div className="space-y-2 rounded border border-emerald-200 bg-emerald-50/40 p-3 dark:border-emerald-900 dark:bg-emerald-950/20">
+  return <div className="space-y-2 rounded border border-[#d8cbb9] bg-[#f8f5ef] p-3">
     <div className="flex flex-wrap items-center gap-2">
       <Button type="button" size="sm" variant="outline"
         disabled={disabled || !hasLines || work.blocked || start.isPending || !progress || state.isError || progress.running}
         onClick={() => start.mutate()}>
         {start.isPending ? "Starting context drafts…" : progress?.running ? "Filling empty contexts…" : progress?.failed || start.isError || progress?.error ? "Retry empty contexts" : "Fill empty contexts"}
       </Button>
-      <p className="text-xs text-muted-foreground">AI draft · review before sharing. Included in ordinary translation approval.</p>
+      <p className="text-xs text-muted-foreground">Optional AI draft · review before sharing. Manual context and normal edits remain available.</p>
     </div>
     <p className="text-xs text-muted-foreground">Only empty saved contexts are filled. Existing text and images stay untouched. Sources are linked in the context.</p>
     {state.isLoading && <Skeleton aria-label="Checking context generation" className="h-5 w-full" />}
@@ -46,6 +46,7 @@ export function ContextGenerationActions({ devisId, disabled, translationStatus,
       </p>}
     {(state.isError || start.isError || progress?.error || (!!progress?.failed && !progress.running)) &&
       <div role="alert" className="space-y-1 text-xs text-destructive">
+        <p>Optional AI generation does not prevent you from writing and saving context yourself.</p>
         {state.isError && <p>Could not check context generation: {state.error.message} <Button type="button" size="sm" variant="outline" onClick={() => void state.refetch()}>Retry status</Button></p>}
         {start.isError && <p>{start.error.message}</p>}
         {progress?.error && <p>{progress.error}</p>}

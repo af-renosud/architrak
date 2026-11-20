@@ -2,7 +2,7 @@ import type { QuotationExceptionReview } from "@shared/quotation-exceptions";
 import { Button } from "@/components/ui/button";
 import { quotationFieldLabel } from "./quotation-review-labels";
 
-export interface QuotationReviewTarget { devisId: number; rowId?: number; field?: string }
+export interface QuotationReviewTarget { devisId: number; rowId?: number; field?: string; page?: number }
 
 export function QuotationExceptions({ review, devisId, sourceUrl, disabled, historicalIssues }: {
   review: QuotationExceptionReview;

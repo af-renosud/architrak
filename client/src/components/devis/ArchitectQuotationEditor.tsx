@@ -14,27 +14,29 @@ import { correctionCents, correctionMoney, correctionProduct, correctionFinancia
 import type { ArchitectCorrectionDraft, ArchitectCorrectionLine, ArchitectCorrectionSnapshot } from "./architect-correction-model";
 import type { DevisLineContext } from "@shared/schema";
 import { DevisLineContextEditor } from "./DevisLineContextEditor";
-import { QuotationApprovalReview } from "./QuotationApprovalReview";
+import { QuotationApprovalReview, type TranslationReadiness } from "./QuotationApprovalReview";
 import { QuotationConflictReview } from "./QuotationConflictReview";
 import { mergeQuotationDraft, type MergeChoices } from "./quotation-three-way";
 import { quotationWorkBlocked, setQuotationWork, useQuotationWork } from "./quotation-review-state";
 import { keepQuotationDraft, readQuotationDraft } from "./quotation-draft-backup";
 import type { QuotationReviewTarget } from "./QuotationExceptions";
 import { quotationFieldLabel } from "./quotation-review-labels";
+import { needsSourceConfirmation, quotationEditorField, quotationTargetRowId } from "./quotation-review-target";
+import type { QuotationIssue } from "@shared/quotation-decision";
 import "./architect-correction.css";
 
 interface Props { devisId: number; projectId: string; disabled?: boolean; compact?: boolean; hideTrigger?: boolean }
 const euro = (decimal: string) => `${decimal.replace(".", ",")} €`;
 
-function DraftField({ label, value, onChange, multiline = false, disabled = false, numeric = false }: {
-  label: string; value: string; onChange: (value: string) => void; multiline?: boolean; disabled?: boolean; numeric?: boolean;
+function DraftField({ label, value, onChange, multiline = false, disabled = false, numeric = false, field }: {
+  label: string; value: string; onChange: (value: string) => void; multiline?: boolean; disabled?: boolean; numeric?: boolean; field?: string;
 }) {
   const id = useId();
   return <div className="min-w-0">
     <label htmlFor={id} className="correction-label">{label}</label>
-    {multiline ? <Textarea id={id} value={value} onChange={event => onChange(event.target.value)}
+    {multiline ? <Textarea id={id} data-quotation-field={field} value={value} onChange={event => onChange(event.target.value)}
       disabled={disabled} className="resize-y text-xs bg-background" />
-      : <Input id={id} value={value} onChange={event => onChange(event.target.value)}
+      : <Input id={id} data-quotation-field={field} value={value} onChange={event => onChange(event.target.value)}
         disabled={disabled} inputMode={numeric ? "decimal" : undefined}
         className={`text-xs bg-background ${numeric ? "correction-number" : ""}`} />}
   </div>;
@@ -44,6 +46,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   const [open, setOpen] = useState(false);
   const [recoveringVat, setRecoveringVat] = useState(false);
   const [vatRecoveryMessage, setVatRecoveryMessage] = useState<string | null>(null);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const [discardOpen, setDiscardOpen] = useState(false);
   const [draft, setDraft] = useState<ArchitectCorrectionDraft | null>(null);
   const [original, setOriginal] = useState<ArchitectCorrectionSnapshot | null>(null);
@@ -65,6 +68,11 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   const requestedTarget = useRef<QuotationReviewTarget | null>(null);
   const [locateRequest, setLocateRequest] = useState(0);
   const [requestedField, setRequestedField] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<TranslationReadiness | null>(null);
+  const [sourceConfirmationOpen, setSourceConfirmationOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const [sourcePage, setSourcePage] = useState<number | null>(null);
+  const workspace = useRef<HTMLDivElement>(null);
   const submitLock = useRef(false);
   const mounted = useRef(true);
   const frenchInput = useRef<HTMLTextAreaElement>(null);
@@ -87,6 +95,8 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
       const target = typeof detail === "number" ? { devisId: detail } : detail;
       if (disabled || !target || target.devisId !== devisId) return;
       requestedTarget.current = target;
+      if (quotationEditorField(target.field) === "sourceTtc") setSourceConfirmationOpen(true);
+      if (target.page && Number.isSafeInteger(target.page) && target.page > 0) setSourcePage(target.page);
       setLocateRequest(value => value + 1);
       setOpen(true);
     };
@@ -105,7 +115,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     const requested = requestedTarget.current;
     const requestedRow = requested?.rowId == null ? undefined : loadedDraft.lines.find(line => line.id === requested.rowId);
     setSelected(requestedRow?.clientKey ?? "header");
-    setRequestedField(requested?.field ?? null);
+    setRequestedField(quotationEditorField(requested?.field, requested?.rowId == null) ?? null);
     requestedTarget.current = null;
     setError(backup ? "Your unsaved working draft was restored in this tab. Review it before saving." : null);
     setStale(!!recovered?.conflicts.length); setSavedMessage(false); setVatRecoveryMessage(null);
@@ -118,10 +128,20 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     requestedTarget.current = null;
     const row = target.rowId == null ? undefined : draft.lines.find(line => line.id === target.rowId);
     setSelected(row?.clientKey ?? "header");
-    setRequestedField(target.field ?? null);
+    setRequestedField(quotationEditorField(target.field, target.rowId == null) ?? null);
     setSelection(null); setTarget("");
     if (target.rowId != null && !row) setError("The requested working row is no longer present. Review the current working quotation; no rows have been changed.");
   }, [open, draft, locateRequest]);
+  useEffect(() => {
+    if (!open || !draft || !requestedField) return;
+    const timer = window.setTimeout(() => {
+      const field = Array.from(workspace.current?.querySelectorAll<HTMLElement>("[data-quotation-field]") ?? [])
+        .find(element => element.dataset.quotationField === requestedField && !element.closest("[hidden]"));
+      field?.focus({ preventScroll: true });
+      field?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [open, !!draft, selected, requestedField, locateRequest, sourceConfirmationOpen]);
   const financialIssues = useMemo(() => draft ? correctionFinancialIssues(draft) : [], [draft]);
   const totals = useMemo(() => {
     if (!draft) return { value: null, error: null };
@@ -171,6 +191,25 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   const currentIndex = draft?.lines.findIndex(line => line.clientKey === selected) ?? -1;
   const current = draft && currentIndex >= 0 ? draft.lines[currentIndex] : null;
   const numericEditable = editable && financialAllowed;
+  const sourceConfirmationRequired = !original?.baseline && (financialDirty || !!readiness?.blockers.some(issue =>
+    needsSourceConfirmation(issue.code)));
+  const sourceTtcInput = baselineTtc.replace(/[ \u00a0\u202f]/g, "").replace(",", ".");
+  const sourceConfirmationHint = !sourceTtcInput ? "Enter the final VAT-inclusive total printed on the original PDF."
+    : !/^\d+(?:\.\d{1,2})?$/.test(sourceTtcInput) ? "Use an amount such as 75059.00 or 75 059,00, with no more than two decimal places."
+      : !/^[1-9]\d*$/.test(baselinePage) ? "Enter the PDF page number where that total is printed."
+        : !pdfConfirmed ? "Tick the confirmation after comparing the amount with the original PDF."
+          : `Ready to confirm ${sourceTtcInput.replace(".", ",")} € from PDF page ${baselinePage}.`;
+  const locate = (key: string, target?: QuotationIssue["target"]) => {
+    const rowId = quotationTargetRowId(key, target);
+    const row = draft?.lines.find(line => rowId == null ? line.clientKey === key : line.id === rowId);
+    setSelected(row?.clientKey ?? "header");
+    const field = quotationEditorField(target?.field, !row);
+    const isSource = target?.section === "source" || key === "source" || field === "sourceTtc";
+    setRequestedField(field ?? (isSource && !original?.baseline ? "sourceTtc" : null));
+    if (isSource) setSourceConfirmationOpen(true);
+    if (target?.page && Number.isSafeInteger(target.page) && target.page > 0) setSourcePage(target.page);
+    setSelection(null); setTarget(""); setLocateRequest(value => value + 1);
+  };
   const validationMessage = financialDirty
     ? !original?.baseline ? "Confirm the source TTC from the original PDF before saving financial changes."
       : totals.error ?? (difference === null ? "Source totals could not be read."
@@ -254,8 +293,8 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
       || submitLock.current || !editable || stale) return;
     let ttc: string;
     try {
-      if (!/^\d+(?:\.\d{1,2})?$/.test(baselineTtc)) throw new Error("Transcribe the source TTC with no more than two decimal places.");
-      const cents = correctionCents(baselineTtc);
+      if (!/^\d+(?:\.\d{1,2})?$/.test(sourceTtcInput)) throw new Error("Transcribe the source TTC with no more than two decimal places.");
+      const cents = correctionCents(sourceTtcInput);
       if (cents < BigInt(0)) throw new Error("Source TTC cannot be negative.");
       ttc = correctionMoney(cents);
     } catch (cause) { reportError(cause); return; }
@@ -287,7 +326,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   };
   const fillEnglish = async () => {
     if (!draft || !original || !editable || stale || submitLock.current) return;
-    submitLock.current = true; setError(null);
+    submitLock.current = true; setSuggestionError(null);
     try {
       const result = await suggest.mutateAsync({ ...structuredClone(draft), expectedVersion: original.version });
       if (!mounted.current) return;
@@ -302,12 +341,15 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
         }) } : previous);
       setSavedMessage(false);
       toast({ title: "English suggestions added to empty fields", description: "Existing manual English was preserved. Review this unsaved draft before saving." });
-    } catch (cause) { reportError(cause); } finally { submitLock.current = false; }
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 409) reportError(cause);
+      else setSuggestionError(cause instanceof Error ? cause.message : "Suggestions are unavailable.");
+    } finally { submitLock.current = false; }
   };
 
   return <>
     <div hidden={hideTrigger} className={compact ? "architect-correction review-source-editor-trigger" : "architect-correction px-3 py-3"} data-testid={`architect-correction-entry-${devisId}`}>
-      {error && <p role="alert" className="mb-2 text-xs text-destructive">{stale ? "Stale working quotation · your draft is preserved. " : "Working quotation save failed · your draft is preserved. "}{error}</p>}
+      {error && <p role="alert" className="mb-2 text-xs text-destructive">{stale ? "Stale working quotation · your draft is preserved. " : "Working quotation · your draft is preserved. "}{error}</p>}
       {(dirty || pending) && <p data-workflow-attention className="mb-2 text-[11px] text-muted-foreground">{pending ? "Working quotation · save or update in progress. Keep this project open." : "Working quotation · unsaved correction draft."}</p>}
       <div className={compact ? "" : "correction-banner rounded-lg flex flex-wrap items-center justify-between gap-3 px-4 py-3"}>
         {!compact && <div className="flex items-start gap-3">
@@ -330,27 +372,46 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
           <div className="flex items-center gap-2 text-[#94734c]"><ShieldCheck size={14} /><span className="text-[10px] uppercase tracking-[.15em] font-semibold">Review/edit → Save → Review and approve</span></div>
           <DialogTitle className="text-xl tracking-tight text-[#0b2545]">Review the interpretation. Keep the original.</DialogTitle>
           <DialogDescription className="text-xs leading-relaxed max-w-[700px]">
-            Save French and English content without OCR or model approval. Financial corrections apply as one batch only when the computed TTC matches the independently locked source TTC.
+            Compare the original with the working wording, figures and client context. Save only what you change, then approve the saved translation. Optional AI suggestions are not required.
           </DialogDescription>
           <a href={`/api/devis/${devisId}/pdf?variant=original`} target="_blank" rel="noopener noreferrer"
             className="inline-flex items-center gap-2 text-xs underline underline-offset-4 w-fit">
             <FileText size={13} /> Open original contractor PDF <ExternalLink size={12} />
           </a>
+          <Button type="button" variant="outline" size="sm" className="review-source-toggle w-fit"
+            aria-expanded={sourceOpen} aria-controls={`working-source-${devisId}`}
+            onClick={() => setSourceOpen(value => !value)}>{sourceOpen ? "Hide source PDF" : "Show source PDF alongside review"}</Button>
         </DialogHeader>
         {snapshot.isLoading && !draft ? <div className="p-6 space-y-4" aria-label="Loading quotation editor"><Skeleton className="h-20 w-full" /><Skeleton className="h-12 w-1/3" /><Skeleton className="h-64 w-full" /></div>
           : snapshot.isError && !draft ? <div className="p-7 space-y-3" role="alert"><p className="text-sm font-semibold">The working quotation could not be loaded.</p>
             <p className="text-xs text-muted-foreground">{snapshot.error.message}</p>
             <Button type="button" variant="outline" size="sm" onClick={() => void snapshot.refetch()}>Retry loading</Button></div>
-          : draft && original ? <><div className="review-split"><div className="min-w-0">
+          : draft && original ? <><div className="review-split" ref={workspace}>
+            <aside id={`working-source-${devisId}`} className="review-pdf" data-source-open={sourceOpen}
+              aria-label="Original contractor PDF alongside working quotation">
+              <div className="review-pdf-heading"><strong>Original contractor PDF</strong>
+                <a className="underline" href={`/api/devis/${devisId}/pdf?variant=original${sourcePage ? `#page=${sourcePage}` : ""}`}
+                  target="_blank" rel="noopener noreferrer">Open PDF in new tab</a></div>
+              <iframe title="Original contractor PDF" src={`/api/devis/${devisId}/pdf?variant=original${sourcePage ? `#page=${sourcePage}` : ""}`} />
+            </aside>
+            <div className="review-editing min-w-0">
             <div className="px-5 py-4 md:px-7 space-y-3">
               <QuotationApprovalReview devisId={devisId} disabled={disabled || pending || dirty || stale || snapshot.isFetching || contexts.isFetching || contexts.isError}
+                onReadiness={setReadiness}
                 onRefreshWorking={async () => {
                   const result = await snapshot.refetch();
                   if (result.isError) throw result.error;
                 }}
                 onCloseEditor={dismiss}
-                onLocate={key => { const row = draft.lines.find(line => `line-${line.id}` === key);
-                  setSelected(key === "source" || key === "translation" ? "header" : row?.clientKey ?? key); }} />
+                onLocate={locate} />
+              <p role="status" aria-live="polite" className="review-save-state">
+                {stale ? "Conflict · your draft is preserved. Compare concurrent changes before saving." :
+                  save.isPending ? "Saving your correction…" : baseline.isPending ? "Confirming source evidence…" :
+                  error ? "Attention · your working draft is preserved. See the message below." :
+                  dirty ? financialDirty ? "Unsaved figures and wording · financial changes must reconcile before saving." :
+                    "Unsaved wording · can be saved without changing or confirming the source total." :
+                    "Saved working quotation · no save is needed unless you make a change."}
+              </p>
               {vatRecoveryMessage && <p role="status" className="rounded-md border p-3 text-sm">{vatRecoveryMessage}</p>}
               {(financialIssues.length > 0 || vatRecoveryMessage) && <section className="rounded-lg border border-amber-300 p-4 space-y-3" aria-label="Financial checks">
                 <h3 className="font-semibold text-sm">{financialIssues.length ? `Financial checks — ${financialIssues.length} fields need attention` : "Recovered VAT — review before saving"}</h3>
@@ -361,36 +422,51 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                 </Button><p className="text-xs text-muted-foreground mt-1">Only uniquely matched source items with reconciled totals are accepted. Rates are added to this draft for your review, not saved automatically.</p></div>}
                 <div className="max-h-64 overflow-y-auto space-y-2">
                   {draft.lines.map((line, index) => (financialIssues.some(issue => issue.key === line.clientKey) || vatRecoveryMessage && line.kind === "priced" && line.included) && <div key={line.clientKey} className="grid grid-cols-[1fr_100px] gap-3 items-center border-t pt-2">
-                    <button type="button" className="text-left text-xs underline" onClick={() => setSelected(line.clientKey)}>
+                    <button type="button" className="text-left text-xs underline" onClick={() => locate(line.clientKey, {
+                      section: "financial", rowId: line.id ?? undefined,
+                      field: financialIssues.find(issue => issue.key === line.clientKey)?.field,
+                    })}>
                       Item {index + 1} · {line.descriptionFr.slice(0, 85)}
                       {financialIssues.filter(issue => issue.key === line.clientKey).map(issue => <span key={issue.message} className="block text-amber-900">{issue.message}</span>)}
                     </button>
                     <DraftField label={`Item ${index + 1} VAT (%)`} value={line.vatRate} numeric disabled={!numericEditable || stale}
                       onChange={vatRate => updateDraft({ lines: draft.lines.map(row => row.clientKey === line.clientKey ? { ...row, vatRate } : row) })} />
                   </div>)}
-                  {financialIssues.filter(issue => issue.key === "header").map(issue => <button key={issue.message} type="button" className="block text-xs underline" onClick={() => setSelected("header")}>{issue.message}</button>)}
+                  {financialIssues.filter(issue => issue.key === "header").map(issue => <button key={issue.message} type="button" className="block text-xs underline"
+                    onClick={() => locate("header", { section: "financial", field: issue.field })}>{issue.message}</button>)}
                 </div>
               </section>}
               {original.blockedReason && <div role="alert" className="correction-banner rounded-lg p-3 text-xs flex items-start gap-2"><LockKeyhole size={14} className="shrink-0" />{original.blockedReason}</div>}
               {original.financialBlockedReason && !original.blockedReason && <div className="correction-banner rounded-lg p-3 text-xs flex items-start gap-2"><LockKeyhole size={14} className="shrink-0" /><div>{original.financialBlockedReason}<p className="mt-1 text-muted-foreground">Content may be edited; committed financial identities and figures are protected.</p></div></div>}
-              {original.baseline ? <div className="correction-banner rounded-lg px-4 py-3 flex flex-wrap justify-between gap-3">
+              {original.baseline ? <div data-quotation-field="sourceTtc" tabIndex={-1}
+                className="correction-banner rounded-lg px-4 py-3 flex flex-wrap justify-between gap-3">
                 <div className="flex items-start gap-2"><LockKeyhole size={14} className="mt-0.5" /><div>
                   <p className="text-[10px] uppercase tracking-wider font-semibold">Source TTC · locked independently</p>
                   <p className="text-[11px] text-muted-foreground mt-1">{original.baseline.sourceFileName} · confirmed by {original.baseline.confirmedBy}</p>
                 </div></div><p className="correction-number text-lg font-semibold">{euro(original.baseline.ttc)}</p>
-              </div> : <section className="correction-banner rounded-lg p-4 space-y-3" aria-label="Confirm source TTC">
+              </div> : <div className="space-y-2">
+                {!sourceConfirmationRequired && <Button type="button" variant="ghost" size="sm"
+                  aria-expanded={sourceConfirmationOpen} aria-controls={`source-confirmation-${devisId}`}
+                  onClick={() => setSourceConfirmationOpen(value => !value)}>Confirm source total (optional)</Button>}
+                {(sourceConfirmationRequired || sourceConfirmationOpen) && <section id={`source-confirmation-${devisId}`}
+                  className="correction-banner rounded-lg p-4 space-y-3" aria-label="Confirm source TTC">
                 <div className="flex items-start gap-2"><FileText size={16} className="shrink-0 mt-0.5" /><div><h3 className="text-xs font-semibold">Establish the financial backstop from the PDF</h3>
-                  <p className="text-[11px] text-muted-foreground mt-1">Extracted totals and working row sums are not a trusted baseline. Read the original PDF and transcribe its final TTC once. This confirmation cannot be changed by ordinary edits.</p></div></div>
+                  <p className="text-[11px] text-muted-foreground mt-1">Use this manual backstop when source confirmation or financial changes require it. Read the original PDF and transcribe its final TTC once. A source-verified, unchanged quotation does not need re-entry. This confirmation cannot be changed by ordinary edits.</p></div></div>
                 <div className="grid gap-3 md:grid-cols-[1fr_120px_auto] items-end">
-                  <DraftField label="Final TTC on original PDF (€)" value={baselineTtc} onChange={setBaselineTtc} numeric disabled={!editable || stale} />
+                  <DraftField label="Final TTC on original PDF (€)" field="sourceTtc" value={baselineTtc} onChange={setBaselineTtc} numeric disabled={!editable || stale} />
                   <DraftField label="PDF page" value={baselinePage} onChange={setBaselinePage} numeric disabled={!editable || stale} />
-                  <Button type="button" size="sm" variant="outline" disabled={!editable || stale || !pdfConfirmed || !baselineTtc || !/^[1-9]\d*$/.test(baselinePage)}
+                  <Button type="button" size="sm" variant="outline" disabled={!editable || stale || !pdfConfirmed || !/^\d+(?:\.\d{1,2})?$/.test(sourceTtcInput) || !/^[1-9]\d*$/.test(baselinePage)}
                     onClick={() => void establishBaseline()}><LockKeyhole size={13} className="mr-2" />{baseline.isPending ? "Confirming…" : "Lock source TTC"}</Button>
                 </div>
                 <div className="flex items-start gap-2 text-[11px]"><input id={confirmId} type="checkbox" checked={pdfConfirmed}
                   disabled={!editable || stale} onChange={event => setPdfConfirmed(event.target.checked)} className="mt-0.5 accent-[#0b2545]" />
                   <label htmlFor={confirmId}>I have read the original PDF and confirmed this TTC, including its VAT, discounts and accepted options.</label></div>
-              </section>}
+                <p role="status" className="text-xs text-muted-foreground">{sourceConfirmationHint}</p>
+                </section>}
+                {!sourceConfirmationRequired && <p className="text-[11px] text-muted-foreground">{readiness
+                  ? "No manual source confirmation is requested by the current checklist."
+                  : "The saved-version checklist determines whether source confirmation is needed."} Financial edits may require an independently confirmed source total.</p>}
+              </div>}
               {original.advisoryMessages.length > 0 && <details className="text-[11px] border border-[#d8cbb9] rounded-lg px-3 py-2">
                 <summary className="cursor-pointer font-semibold">Extraction observations · advisory, not a human approval gate</summary>
                 <ul className="list-disc pl-4 mt-2 space-y-1 text-muted-foreground">{original.advisoryMessages.map((message, index) => <li key={index}>{message}</li>)}</ul>
@@ -412,12 +488,12 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                 if (merged.conflicts.length) return;
                 setOriginal(latest); setDraft(merged.draft); setLatest(null); setStale(false); setError(null); setSavedMessage(false);
               }} />}
-            <div className="grid md:grid-cols-[230px_minmax(0,1fr)] border-t border-[#d8cbb9]">
+            <div className="correction-editor-grid border-t border-[#d8cbb9]">
               <nav className="p-3 md:border-r border-[#d8cbb9] bg-[#f8f5ef]" aria-label="Working quotation sections">
                 <button type="button" className={`text-left w-full p-3 rounded-md text-xs ${selected === "header" ? "bg-[#0b2545] text-[#f8f5ef]" : "hover:bg-[#ece6db]"}`}
                   onClick={() => { setSelected("header"); setSelection(null); }}><span className="block font-semibold">Header & overview</span><span className="block text-[10px] opacity-75 mt-1">French · English · explanations</span></button>
                 <p className="correction-label px-3 mt-5">{draft.lines.length} stable content rows</p>
-                <div className="md:max-h-[430px] md:overflow-y-auto space-y-1">
+                <div className="correction-row-list space-y-1">
                   {draft.lines.map((line, index) => <button type="button" key={line.clientKey}
                     onClick={() => { setSelected(line.clientKey); setSelection(null); setTarget(""); }}
                     className={`w-full rounded-md p-3 text-left text-xs ${selected === line.clientKey ? "bg-[#0b2545] text-[#f8f5ef]" : "hover:bg-[#ece6db]"}`}>
@@ -430,6 +506,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                 <div className="grid gap-2 mt-4">
                   <Button type="button" size="sm" variant="outline" onClick={() => void fillEnglish()} disabled={!editable || stale}
                     className="text-[11px] justify-start"><Languages size={12} className="mr-2" />{suggest.isPending ? "Suggesting English…" : "Fill empty English fields"}</Button>
+                  {suggestionError && <p role="alert" className="text-xs text-destructive">Optional English suggestions unavailable: {suggestionError} You can keep editing and save your own wording.</p>}
                   <Button type="button" size="sm" variant="outline" onClick={() => addLine("context")} disabled={!editable} className="text-[11px] justify-start"><Plus size={12} className="mr-2" />Add context-only line</Button>
                   <Button type="button" size="sm" variant="outline" onClick={() => addLine("priced")} disabled={!numericEditable} className="text-[11px] justify-start"><Plus size={12} className="mr-2" />Add priced line</Button>
                 </div>
@@ -440,20 +517,20 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                 {selected === "header" ? <div className="space-y-5">
                   <h3 className="text-sm font-semibold">Header & contextual overview</h3>
                   <div className="grid gap-4 md:grid-cols-2">
-                    <DraftField label="French header" value={draft.headerFr} onChange={headerFr => updateDraft({ headerFr })} multiline disabled={!editable} />
-                    <DraftField label="English header" value={draft.headerEn} onChange={headerEn => updateDraft({ headerEn })} multiline disabled={!editable} />
-                    <DraftField label="French header explanation" value={draft.explanationFr} onChange={explanationFr => updateDraft({ explanationFr })} multiline disabled={!editable} />
-                    <DraftField label="English header explanation" value={draft.explanationEn} onChange={explanationEn => updateDraft({ explanationEn })} multiline disabled={!editable} />
+                    <DraftField label="French header" field="headerFr" value={draft.headerFr} onChange={headerFr => updateDraft({ headerFr })} multiline disabled={!editable} />
+                    <DraftField label="English header" field="headerEn" value={draft.headerEn} onChange={headerEn => updateDraft({ headerEn })} multiline disabled={!editable} />
+                    <DraftField label="French header explanation" field="explanationFr" value={draft.explanationFr} onChange={explanationFr => updateDraft({ explanationFr })} multiline disabled={!editable} />
+                    <DraftField label="English header explanation" field="explanationEn" value={draft.explanationEn} onChange={explanationEn => updateDraft({ explanationEn })} multiline disabled={!editable} />
                   </div>
-                  <DraftField label="English overview" value={draft.summaryEn} onChange={summaryEn => updateDraft({ summaryEn })} multiline disabled={!editable} />
+                  <DraftField label="English overview" field="summaryEn" value={draft.summaryEn} onChange={summaryEn => updateDraft({ summaryEn })} multiline disabled={!editable} />
                   <div className="border-t border-[#d8cbb9] pt-4 space-y-2">
                     <label className="correction-label" htmlFor={`${confirmId}-vat-rounding`}>VAT rounding on source PDF</label>
-                    <select id={`${confirmId}-vat-rounding`} value={draft.vatRounding ?? "bucket"} disabled={!numericEditable}
+                    <select id={`${confirmId}-vat-rounding`} data-quotation-field="vatRounding" value={draft.vatRounding ?? "bucket"} disabled={!numericEditable}
                       onChange={event => updateDraft({ vatRounding: event.target.value as "bucket" | "line" })}
                       className="w-full h-9 rounded-md border border-input bg-background text-xs px-2">
                       <option value="bucket">Once per VAT-rate subtotal</option><option value="line">Per individual line</option>
                     </select>
-                    <DraftField label="Document discount HT (€)" value={draft.discountHt} onChange={discountHt => updateDraft({ discountHt })} numeric disabled={!numericEditable} />
+                    <DraftField label="Document discount HT (€)" field="discountHt" value={draft.discountHt} onChange={discountHt => updateDraft({ discountHt })} numeric disabled={!numericEditable} />
                     <p className="text-[11px] text-muted-foreground">A positive discount reduces the included HT. The preview allocates it proportionally across actual VAT buckets; no 20% default or balancing adjustment is added.</p>
                   </div>
                 </div> : current ? <section className="space-y-5" aria-label={`Edit row ${currentIndex + 1}`}>
@@ -471,13 +548,13 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                   </div>
                   <div className="grid gap-4 md:grid-cols-2">
                     <div><label className="correction-label" htmlFor={`${confirmId}-description`}>Full French description</label>
-                      <Textarea id={`${confirmId}-description`} ref={frenchInput} value={current.descriptionFr} disabled={!editable}
+                      <Textarea id={`${confirmId}-description`} data-quotation-field="descriptionFr" ref={frenchInput} value={current.descriptionFr} disabled={!editable}
                         onChange={event => { updateLine({ descriptionFr: event.target.value }); setSelection(null); }}
                         onSelect={event => setSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}
                         className="resize-y text-xs bg-background" /></div>
-                    <DraftField label="English translation" value={current.descriptionEn} onChange={descriptionEn => updateLine({ descriptionEn })} multiline disabled={!editable} />
-                    <DraftField label="French explanation" value={current.explanationFr} onChange={explanationFr => updateLine({ explanationFr })} multiline disabled={!editable} />
-                    <DraftField label="English explanation" value={current.explanationEn} onChange={explanationEn => updateLine({ explanationEn })} multiline disabled={!editable} />
+                    <DraftField label="English translation" field="descriptionEn" value={current.descriptionEn} onChange={descriptionEn => updateLine({ descriptionEn })} multiline disabled={!editable} />
+                    <DraftField label="French explanation" field="explanationFr" value={current.explanationFr} onChange={explanationFr => updateLine({ explanationFr })} multiline disabled={!editable} />
+                    <DraftField label="English explanation" field="explanationEn" value={current.explanationEn} onChange={explanationEn => updateLine({ explanationEn })} multiline disabled={!editable} />
                   </div>
                   <p className="text-[11px] text-muted-foreground">French changes do not rewrite your English text. Review both languages before approving the corrected package.</p>
                   <div className="correction-row p-4 space-y-3">
@@ -503,24 +580,25 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                     : <div className="border-t border-[#d8cbb9] pt-4 space-y-3">
                       <h4 className="text-xs font-semibold">Working figures · reconciled as a complete batch</h4>
                       <div className="grid gap-3 grid-cols-1 md:grid-cols-3">
-                        <DraftField label="Quantity" value={current.quantity} onChange={quantity => updateLine({ quantity })} numeric disabled={!numericEditable} />
-                        <DraftField label="Unit" value={current.unit} onChange={unit => updateLine({ unit })} disabled={!numericEditable} />
-                        <DraftField label="Unit price HT (€)" value={current.unitPriceHt} onChange={unitPriceHt => updateLine({ unitPriceHt })} numeric disabled={!numericEditable} />
-                        <DraftField label="Line amount HT (€)" value={current.totalHt} onChange={totalHt => updateLine({ totalHt })} numeric disabled={!numericEditable} />
-                        <DraftField label="Actual VAT rate (%)" value={current.vatRate} onChange={vatRate => updateLine({ vatRate })} numeric disabled={!numericEditable} />
+                        <DraftField label="Quantity" field="quantity" value={current.quantity} onChange={quantity => updateLine({ quantity })} numeric disabled={!numericEditable} />
+                        <DraftField label="Unit" field="unit" value={current.unit} onChange={unit => updateLine({ unit })} disabled={!numericEditable} />
+                        <DraftField label="Unit price HT (€)" field="unitPriceHt" value={current.unitPriceHt} onChange={unitPriceHt => updateLine({ unitPriceHt })} numeric disabled={!numericEditable} />
+                        <DraftField label="Line amount HT (€)" field="totalHt" value={current.totalHt} onChange={totalHt => updateLine({ totalHt })} numeric disabled={!numericEditable} />
+                        <DraftField label="Actual VAT rate (%)" field="vatRate" value={current.vatRate} onChange={vatRate => updateLine({ vatRate })} numeric disabled={!numericEditable} />
                         <div className="flex items-end"><Button type="button" variant="outline" size="sm" disabled={!numericEditable} className="text-[11px] w-full" onClick={() => {
                           try { updateLine({ totalHt: correctionProduct(current.quantity, current.unitPriceHt) }); }
                           catch (cause) { reportError(cause); }
                         }}>Calculate quantity × unit price</Button></div>
                       </div>
-                      <label className="text-[11px] flex items-start gap-2"><input type="checkbox" checked={current.included} disabled={!numericEditable}
+                      <label className="text-[11px] flex items-start gap-2"><input type="checkbox" data-quotation-field="included" checked={current.included} disabled={!numericEditable}
                         onChange={event => updateLine({ included: event.target.checked })} className="mt-0.5 accent-[#0b2545]" />Include this item in the financial total (uncheck for an unaccepted option).</label>
                       <p className="text-[10px] text-muted-foreground">Amounts may be edited explicitly to represent the contractor’s actual line rounding. Enter 0% for exempt or reverse-charge VAT; an empty VAT rate is not assumed to be 20%.</p>
                     </div>}
                 </section> : null}
                 {contexts.isLoading && <Skeleton className="h-24 w-full mt-5" />}
                 {contexts.isError && <div role="alert" className="text-xs mt-5">Context could not be loaded. <Button type="button" size="sm" variant="outline" onClick={() => void contexts.refetch()}>Retry context</Button></div>}
-                {contexts.data && draft.lines.map((line, index) => <div key={line.clientKey} hidden={selected !== line.clientKey} className="border-t mt-5 pt-5">
+                {contexts.data && draft.lines.map((line, index) => <div key={line.clientKey} hidden={selected !== line.clientKey}
+                  data-quotation-field="context" tabIndex={-1} className="border-t mt-5 pt-5">
                   {line.id === null ? <p className="text-xs">Save this new line before adding rich context or images. Saving assigns its stable identity; wording above stays in your draft.</p> :
                     <DevisLineContextEditor devisId={devisId} lineItemId={line.id} lineNumber={index + 1}
                       context={contexts.data.contexts?.find(context => context.devisLineItemId === line.id) ?? null}
@@ -533,9 +611,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
               <ol className="mt-3 space-y-3">{original.history.map(entry => <li key={entry.id}><p>{entry.summary}</p>
                 <p className="text-muted-foreground mt-1">{entry.actor} · {entry.savedAt}</p></li>)}</ol>
             </details>}
-            </div><aside className="review-pdf" aria-label="Original contractor PDF alongside working quotation">
-              <iframe title="Original contractor PDF" src={`/api/devis/${devisId}/pdf?variant=original`} />
-            </aside></div>
+            </div></div>
             <footer className="correction-toolbar px-5 py-4 md:px-7">
               <div className="flex flex-wrap justify-between gap-4 items-center">
                 <div className="min-w-0">
@@ -547,7 +623,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                   {validationMessage && <p className="text-[11px] text-amber-900 mt-1 flex gap-1"><TriangleAlert size={12} className="shrink-0 mt-0.5" />{validationMessage}</p>}
                   {totals.error && !financialDirty && <p className="text-[10px] text-muted-foreground mt-1">VAT treatment is incomplete. Text-only corrections remain available; complete figures before a financial batch.</p>}
                   {savedMessage && <p role="status" className="text-[11px] text-emerald-800 mt-1">Saved. Review and approve the latest checklist above.</p>}
-                  <p className="text-[10px] text-muted-foreground mt-1">No automatic save. Original PDF, locked TTC and signed evidence are not rewritten.</p>
+                  <p className="text-[10px] text-muted-foreground mt-1">{financialDirty ? "Financial batch · must reconcile with the confirmed source total." : "Wording-only saves do not require a new source-total confirmation."} Wording and figures save on request; rich context saves automatically. Original PDF and signed evidence are unchanged.</p>
                 </div>
                 <div className="flex gap-2">
                   <Button type="button" variant="outline" size="sm" onClick={dismiss}>{ownUploadPending ? "Uploading image…" : dirty ? "Close editor…" : "Close"}</Button>

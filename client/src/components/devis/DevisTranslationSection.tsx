@@ -12,6 +12,8 @@ import { TranslationReviewNotes, type TranslationReviewCheck } from "./Translati
 import { quotationWorkBlocked, useQuotationWork } from "./quotation-review-state";
 import { QuotationApprovalReview } from "./QuotationApprovalReview";
 import { ContextGenerationActions, LineContextGenerationAction } from "./ContextGenerationActions";
+import { quotationTargetRowId } from "./quotation-review-target";
+import type { QuotationReviewTarget } from "./QuotationExceptions";
 
 interface DevisTranslationSectionProps {
   devisId: number; devisCode: string; lineItems: DevisLineItem[];
@@ -57,7 +59,8 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewC
   const contextReadOnly = readOnly || status === "finalised" || ["processing", "pending"].includes(status);
   const header = data?.headerTranslated as DevisTranslationHeader | undefined;
   const lines = data?.lineTranslations as DevisTranslationLine[] | undefined;
-  const open = () => window.dispatchEvent(new CustomEvent("quotation-review-open", { detail: devisId }));
+  const open = (target?: Omit<QuotationReviewTarget, "devisId">) =>
+    window.dispatchEvent(new CustomEvent("quotation-review-open", { detail: target ? { devisId, ...target } : devisId }));
   const pdf = (variant: string) => window.open(`/api/devis/${devisId}/pdf?variant=${variant}${explanations ? "&explanations=true" : ""}`, "_blank", "noopener,noreferrer");
   if (translation.isLoading) return <div aria-label="Loading saved translation" className="p-4 space-y-3"><Skeleton className="h-12 w-full" /><Skeleton className="h-40 w-full" /></div>;
   if (translation.isError && !data) return <section role="alert" className="border rounded p-4 space-y-2"><p>Saved translation could not be loaded.</p><Button variant="outline" onClick={() => void translation.refetch()}>Retry translation</Button></section>;
@@ -67,7 +70,7 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewC
         <p className="text-xs text-muted-foreground mt-1">{status === "finalised" ? "Approved saved version" : "Saved wording · approve the translation here when your review is complete."}</p>
         {!contextReadOnly && <p className="text-xs text-emerald-700 mt-1">Edit context text and images directly below each item. Changes save automatically; wait for Saved.</p>}</div>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="outline" onClick={open}>Review/edit quotation</Button>
+        <Button size="sm" variant="outline" onClick={() => open()}>Review/edit quotation</Button>
         {["draft", "edited"].includes(status) && <Button size="sm" disabled={readOnly}
           aria-expanded={approvalOpen} aria-controls={`translation-approval-${devisId}`}
           onClick={() => setApprovalOpen(value => !value)}>Approve translation</Button>}
@@ -79,12 +82,15 @@ export function DevisTranslationSection({ devisId, devisCode, lineItems, reviewC
     </p>}
     {approvalOpen && <div id={`translation-approval-${devisId}`} className="rounded-md border bg-emerald-50/50 p-4">
       <QuotationApprovalReview devisId={devisId} disabled={readOnly || translation.isError}
-        onLocate={key => {
-          const match = key.match(/^line-(\d+)$/);
-          const line = match && ordered.find(item => item.id === Number(match[1]));
-          const target = line && document.getElementById(`line-anchor-translation-${devisId}-${line.lineNumber}`);
-          if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
-          else open();
+        onLocate={(key, target) => {
+          const rowId = quotationTargetRowId(key, target);
+          const line = rowId == null ? undefined : ordered.find(item => item.id === rowId);
+          const contextTarget = target?.field === "context" || target?.field === "document";
+          const anchor = line && document.getElementById(`line-anchor-translation-${devisId}-${line.lineNumber}`);
+          if (contextTarget && anchor) {
+            anchor.scrollIntoView?.({ behavior: "smooth", block: "center" });
+            anchor.querySelector<HTMLElement>('[contenteditable="true"]')?.focus();
+          } else open({ rowId, field: target?.field ?? (target?.section === "source" ? "sourceTtc" : undefined), page: target?.page });
         }} />
     </div>}
     <div className="flex flex-wrap gap-2 items-center">

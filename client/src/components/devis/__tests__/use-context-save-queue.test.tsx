@@ -74,6 +74,22 @@ function putCalls() {
 }
 
 describe("useContextSaveQueue (Task 364)", () => {
+  it("clears an unmounted failed surface when its exact draft is recovered and saved elsewhere", async () => {
+    const preserved = doc("Preserved context");
+    preserved.content.push({ type: "image", attrs: { assetId: 742, size: "small" } });
+    fetchMock.mockResolvedValueOnce(jsonRes({ message: "Offline" }, 500));
+    const inline = renderHook(() => useContextSaveQueue(709, 100, ctx(1, doc("base")), true, "inline"));
+    act(() => inline.result.current.enqueue(preserved));
+    await waitFor(() => expect(inline.result.current.saveState).toBe("error"));
+    inline.unmount();
+    expect(quotationWorkBlocked(709)).toBe(true);
+    fetchMock.mockResolvedValueOnce(jsonRes(ctx(2, preserved)));
+    const workspace = renderHook(() => useContextSaveQueue(709, 100, ctx(1, doc("base")), true, "workspace"));
+    await waitFor(() => expect(workspace.result.current.saveState).toBe("saved"));
+    expect(JSON.parse(putCalls().at(-1)![1].body as string).document).toEqual(preserved);
+    expect(quotationWorkBlocked(709)).toBe(false);
+    workspace.unmount();
+  });
   it("a workspace save cannot clear an unresolved inline context save", async () => {
     const initial = ctx(3, doc("old"));
     const inline = renderHook(() => useContextSaveQueue(701, 100, initial, true, "inline"));

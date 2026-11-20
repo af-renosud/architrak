@@ -7,13 +7,29 @@
 }
 .architect-correction .review-checklist { background: #edf2ee; border: 1px solid #bbcbbc; border-radius: 8px; padding: 16px; }
 .architect-correction .review-split { display: grid; grid-template-columns: minmax(0, 1fr); }
-.architect-correction .review-pdf { display: none; }
+.architect-correction .review-pdf { display: none; background: #eee8dd; border-bottom: 1px solid #d8cbb9; }
+.architect-correction .review-pdf[data-source-open="true"] { display: block; }
+.architect-correction .review-pdf iframe { width: 100%; height: 52dvh; min-height: 280px; border: 0; }
+.architect-correction .review-pdf-heading { padding: 10px 16px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 11px; }
+.architect-correction .correction-editor-grid { display: grid; grid-template-columns: minmax(0, 1fr); }
+.architect-correction .correction-editor-grid > nav { border-right: 0; border-bottom: 1px solid #d8cbb9; }
+.architect-correction .correction-editor-grid > nav .correction-row-list { max-height: 190px; overflow-y: auto; }
+.architect-correction .review-checklist-group { border-top: 1px solid #cbd5cb; padding-top: 10px; }
+.architect-correction .review-save-state { padding: 9px 12px; border: 1px solid #d8cbb9; border-radius: 5px; background: #f8f5ef; font-size: 11px; }
+.architect-correction [data-quotation-field]:focus-visible { outline: 2px solid #94734c; outline-offset: 3px; }
 .architect-correction .merge-field { border: 1px solid #c4ad8c; padding: 12px; border-radius: 6px; background: #f8f5ef; }
 .architect-correction .merge-field pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; max-height: 180px; overflow: auto; }
-@media (min-width: 1200px) {
-  .architect-correction .review-split { grid-template-columns: minmax(0, 1fr) 36%; align-items: start; }
-  .architect-correction .review-pdf { display: block; position: sticky; top: 0; height: 76dvh; border-left: 1px solid #d8cbb9; background: #eee8dd; }
-  .architect-correction .review-pdf iframe { width: 100%; height: 100%; border: 0; }
+@media (min-width: 1024px) {
+  .architect-correction .review-split { grid-template-columns: minmax(0, 58fr) minmax(0, 42fr); align-items: start; }
+  .architect-correction .review-editing { grid-column: 1; grid-row: 1; }
+  .architect-correction .review-pdf { grid-column: 2; grid-row: 1; display: block; position: sticky; top: 0; height: 76dvh; border-left: 1px solid #d8cbb9; }
+  .architect-correction .review-pdf iframe { height: calc(100% - 44px); }
+  .architect-correction .review-source-toggle { display: none; }
+}
+@media (min-width: 1440px) {
+  .architect-correction .correction-editor-grid { grid-template-columns: 200px minmax(0, 1fr); }
+  .architect-correction .correction-editor-grid > nav { border-right: 1px solid #d8cbb9; border-bottom: 0; }
+  .architect-correction .correction-editor-grid > nav .correction-row-list { max-height: 430px; }
 }
 .architect-correction .correction-banner {
   background: var(--correction-paper);

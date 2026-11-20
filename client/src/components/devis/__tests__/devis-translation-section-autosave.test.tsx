@@ -7,7 +7,10 @@ import type { DevisLineItem } from "@shared/schema";
 import { DevisTranslationSection } from "../DevisTranslationSection";
 
 vi.mock("../DevisCostAnalysisCard", () => ({ DevisCostAnalysisCard: () => null }));
-vi.mock("../QuotationApprovalReview", () => ({ QuotationApprovalReview: () => <div>Approval checklist here</div> }));
+vi.mock("../QuotationApprovalReview", () => ({ QuotationApprovalReview: ({ onLocate }: {
+  onLocate: (key: string, target: { section: "financial"; rowId: number; field: string; page: number }) => void;
+}) => <div>Approval checklist here<button type="button" onClick={() =>
+  onLocate("opaque", { section: "financial", rowId: 100, field: "vatRate", page: 2 })}>Locate figure issue</button></div> }));
 vi.mock("../DevisLineContextEditor", () => ({ DevisLineContextEditor: ({ readOnly }: { readOnly: boolean }) => <div>Context {readOnly ? "read-only" : "editable"}</div> }));
 function mount(architectControlled: boolean, status = "draft", readOnly = false) {
   const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
@@ -21,6 +24,18 @@ function mount(architectControlled: boolean, status = "draft", readOnly = false)
 }
 afterEach(cleanup);
 describe("saved package preview replaces unsafe competing autosave paths", () => {
+  it("opens the one workspace at the structured row and field from the saved translation checklist", () => {
+    mount(false);
+    fireEvent.click(screen.getByRole("button", { name: "Approve translation" }));
+    const listener = vi.fn();
+    window.addEventListener("quotation-review-open", listener);
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Locate figure issue" }));
+      expect(listener).toHaveBeenCalledOnce();
+      expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({ devisId: 42, rowId: 100, field: "vatRate", page: 2 });
+      expect(screen.getByText("Context editable")).toBeVisible();
+    } finally { window.removeEventListener("quotation-review-open", listener); }
+  });
   it("keeps saved wording mounted after a failed background refresh", async () => {
     const { client } = mount(false);
     client.getQueryCache().find({ queryKey: ["/api/devis", 42, "translation"], exact: true })!

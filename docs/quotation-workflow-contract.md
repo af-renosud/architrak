@@ -95,7 +95,15 @@ An outdated signature envelope is recoverable through Retry: read its authoritat
 
 Action distinctions remain deliberate: Mode A may send a machine-supported draft translation; Mode B requires finalisation. The card retains its pre-existing additional lot/English-description completeness checks. Recipient checks, live insurance, explicit question authorisation, immutable signed evidence and package construction remain owned by their existing delivery orchestration. A source decision alone is not permission to send.
 
-The following specification explains the vocabulary; the historical audit and its findings above document the starting point, not the current implementation. The consolidated review interface remains separately queued work.
+The following specification explains the vocabulary; the historical audit and its findings above document the starting point, not the current implementation.
+
+### Consolidated review workspace — 2026-11-20
+
+The existing review/edit workspace now keeps the original PDF alongside editing at laptop widths, with a source toggle and new-tab access on smaller screens. Source/figure blockers and saved-content blockers use structured row and field targets. Sending prerequisites are distinct from translation approval.
+
+Inline rich context remains editable beneath translations; the visible Approve translation action is retained. Wording/figure saves are explicit, whereas context autosaves. Unchanged correct quotations need no fabricated edit or save. Manual source confirmation is exposed for the applicable evidence gaps or financial changes, rather than demanded for every quotation.
+
+Working drafts survive navigation and conflicts. A context save recovered in another surface clears an abandoned queue blocker only for the exact persisted document; newer edits, in-flight requests and images remain protected. Idle editor mounts do not invalidate the review checklist. Optional AI errors do not prevent ordinary editing.
 
 ### Extraction recovery — 2026-11-20
 

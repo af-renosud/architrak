@@ -1,27 +1,57 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { QuotationApprovalReview } from "../QuotationApprovalReview";
+import { QuotationApprovalReview, type TranslationReadinessBlocker } from "../QuotationApprovalReview";
 import { setQuotationWork } from "../quotation-review-state";
+import type { QuotationIssue } from "@shared/quotation-decision";
 
 const api = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/queryClient", () => ({ apiRequest: (...args: unknown[]) => api(...args) }));
 let version: string;
-let blockers: Array<{ key: string; message: string }>;
-const mount = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>
-  <QuotationApprovalReview devisId={8828} onLocate={() => {}} />
+let blockers: TranslationReadinessBlocker[];
+let sendingPrerequisites: QuotationIssue[];
+const mount = (onLocate = vi.fn()) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>
+  <QuotationApprovalReview devisId={8828} onLocate={onLocate} />
 </QueryClientProvider>);
 beforeEach(() => {
-  version = "snapshot-a"; blockers = [];
+  version = "snapshot-a"; blockers = []; sendingPrerequisites = [];
   setQuotationWork(8828, "pending-context", false);
   setQuotationWork(8828, "pending-image", false);
   api.mockReset();
-  api.mockImplementation(async (method: string) => ({ json: async () => method === "GET" ? { version, status: "draft", blockers } : { status: "finalised" } }));
+  api.mockImplementation(async (method: string) => ({ json: async () => method === "GET" ? { version, status: "draft", blockers, sendingPrerequisites } : { status: "finalised" } }));
 });
 afterEach(cleanup);
 describe("latest reviewed approval token", () => {
+  it("groups source/figures and saved content and passes structured navigation targets without interpreting messages", async () => {
+    const target: QuotationIssue["target"] = { section: "financial", rowId: 102, field: "vatRate", page: 4 };
+    blockers = [{ key: "opaque", code: "FINANCIAL_FIELD_REQUIRED", message: "Vérifier la donnée", target },
+      { key: "also-opaque", code: "TRANSLATION_MISSING", message: "Texte anglais à revoir",
+        target: { section: "translation", rowId: 103, field: "descriptionEn" } }];
+    const locate = vi.fn();
+    mount(locate);
+    const figures = within(await screen.findByRole("region", { name: "Source & figures" }));
+    fireEvent.click(figures.getByRole("button", { name: "Vérifier la donnée" }));
+    expect(locate).toHaveBeenCalledWith("opaque", target);
+    const content = within(screen.getByRole("region", { name: "Saved content" }));
+    expect(content.getByRole("button", { name: "Texte anglais à revoir" })).toBeVisible();
+    expect(content.queryByText("Vérifier la donnée")).toBeNull();
+    expect(screen.getByRole("checkbox")).toBeDisabled();
+  });
+  it("keeps sending prerequisites separate and does not turn them into approval gates or save requirements", async () => {
+    sendingPrerequisites = [{ code: "SIGNER_REQUIRED", key: "signature", message: "Choose the client signer before sending",
+      severity: "blocker", target: { section: "signature" }, resolution: "open_signature" }];
+    mount();
+    const check = await screen.findByRole("checkbox");
+    await waitFor(() => expect(check).toBeEnabled());
+    const message = screen.getByText("Choose the client signer before sending");
+    expect(message.closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(check);
+    fireEvent.click(screen.getByRole("button", { name: "Approve reviewed quotation" }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith("POST", expect.any(String), { expectedVersion: "snapshot-a", confirmedReview: true }));
+    expect(api.mock.calls.filter(([method]) => method !== "GET")).toHaveLength(1);
+  });
   it("requires explicit review and posts the readiness version to the existing finalise endpoint", async () => {
     mount();
     const check = await screen.findByRole("checkbox");

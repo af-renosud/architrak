@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ArchitectQuotationEditor } from "../ArchitectQuotationEditor";
@@ -35,7 +35,7 @@ const response = (data: unknown, status = 200) => ({
 });
 function mount(compact = false, hideTrigger = false, disabled = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><ArchitectQuotationEditor devisId={42} projectId="8" compact={compact} hideTrigger={hideTrigger} disabled={disabled} /></QueryClientProvider>);
+  return { ...render(<QueryClientProvider client={client}><ArchitectQuotationEditor devisId={42} projectId="8" compact={compact} hideTrigger={hideTrigger} disabled={disabled} /></QueryClientProvider>), client };
 }
 async function open() {
   fireEvent.click(screen.getByRole("button", { name: "Edit working quotation" }));
@@ -71,6 +71,7 @@ it("retains an exact requested stable row through asynchronous snapshot initiali
   release!();
   expect(await screen.findByRole("region", { name: "Edit row 2" })).toBeVisible();
   expect(screen.getByLabelText("Full French description")).toHaveValue("Porte B");
+  await waitFor(() => expect(screen.getByLabelText("Line amount HT (€)")).toHaveFocus());
   expect(saves).toHaveLength(0);
   fireEvent(window, new CustomEvent("quotation-review-open", { detail: { devisId: 42, field: "sourceTtc" } }));
   expect(await screen.findByLabelText("French header")).toHaveValue("Menuiseries sur mesure");
@@ -320,19 +321,132 @@ describe("architect editor persistence and source authority", () => {
     expect(saves[1].headerFr).toBe("My corrected French");
     expect(saves[1].lines[1]).toMatchObject({ id: 102, descriptionEn: "Foreign updated second item" });
   });
-  it("preserves unsaved text while establishing a PDF-backed missing source baseline", async () => {
+  it.each(["4955.50", "4 955,50"])("preserves unsaved text while confirming the PDF total entered as %s", async (amount) => {
     persisted.baseline = null;
     mount(); await open();
     fireEvent.change(screen.getByLabelText("French header"), { target: { value: "Keep this draft" } });
-    fireEvent.change(screen.getByLabelText("Final TTC on original PDF (€)"), { target: { value: "4955.50" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm source total (optional)" }));
+    fireEvent.change(screen.getByLabelText("Final TTC on original PDF (€)"), { target: { value: amount } });
     fireEvent.change(screen.getByLabelText("PDF page"), { target: { value: "3" } });
     expect(screen.getByRole("button", { name: "Lock source TTC" })).toBeDisabled();
     fireEvent.click(screen.getByLabelText(/I have read the original PDF/));
     fireEvent.click(screen.getByRole("button", { name: "Lock source TTC" }));
     await screen.findByText("Source TTC · locked independently");
+    expect(persisted.baseline).toMatchObject({ ttc: "4955.50" });
     expect(screen.getByLabelText("French header")).toHaveValue("Keep this draft");
     fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
     await waitFor(() => expect(saves[0]?.expectedVersion).toBe("baseline-v2"));
+  });
+  it("approves an unchanged clean machine-verified quotation without saving or manually confirming TTC", async () => {
+    persisted.baseline = null;
+    mount(); await open();
+    const confirm = await screen.findByRole("checkbox", { name: /I reviewed the original PDF/ });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    expect(screen.queryByRole("region", { name: "Confirm source TTC" })).toBeNull();
+    expect(screen.queryByLabelText("Final TTC on original PDF (€)")).toBeNull();
+    expect(screen.getByRole("button", { name: "Confirm source total (optional)" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "Save correction" })).toBeDisabled();
+    fireEvent.click(confirm);
+    fireEvent.click(screen.getByRole("button", { name: "Approve reviewed quotation" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, options]) =>
+      url === "/api/devis/42/translation/finalise" && options?.method === "POST")).toBe(true));
+    expect(saves).toHaveLength(0);
+    expect(fetchMock.mock.calls.some(([url, options]) => url === `${path}/source-baseline` && options?.method === "POST")).toBe(false);
+  });
+  it.each(["SOURCE_CONFIRMATION_REQUIRED", "DESCRIPTION_CHARGE_UNVERIFIED"])("shows required source confirmation for %s and locates its field and PDF page", async (code) => {
+    persisted.baseline = null;
+    const fallback = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => url.endsWith("/translation/readiness")
+      ? response({ version: persisted.version, status: "draft", blockers: [{ code, key: "opaque-source",
+        message: "Confirmer la source", severity: "blocker", resolution: "review_source",
+        target: { section: "source", field: "sourceTtc", page: 3 } }] }) : fallback(url, options));
+    mount(); await open();
+    expect(await screen.findByRole("region", { name: "Confirm source TTC" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Confirmer la source" }));
+    await waitFor(() => expect(screen.getByLabelText("Final TTC on original PDF (€)")).toHaveFocus());
+    expect(screen.getByTitle("Original contractor PDF")).toHaveAttribute("src", "/api/devis/42/pdf?variant=original#page=3");
+    expect(screen.getByRole("button", { name: "Approve reviewed quotation" })).toBeDisabled();
+    expect(saves).toHaveLength(0);
+  });
+  it("locates an exact figure using structured fields, not English messages or opaque issue keys", async () => {
+    const fallback = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => url.endsWith("/translation/readiness")
+      ? response({ version: persisted.version, status: "draft", blockers: [{ code: "FINANCIAL_FIELD_REQUIRED", key: "not-a-row-key",
+        message: "Contrôler cette donnée", severity: "blocker", resolution: "edit_figures",
+        target: { section: "financial", rowId: 102, field: "vatRate", page: 5 } }] }) : fallback(url, options));
+    mount(); await open();
+    fireEvent.click(await screen.findByRole("button", { name: "Contrôler cette donnée" }));
+    await screen.findByRole("region", { name: "Edit row 2" });
+    await waitFor(() => expect(screen.getByLabelText("Actual VAT rate (%)")).toHaveFocus());
+    expect(screen.getByLabelText("Full French description")).toHaveValue("Porte B");
+    expect(screen.getByTitle("Original contractor PDF")).toHaveAttribute("src", "/api/devis/42/pdf?variant=original#page=5");
+  });
+  it("keeps a confirmed baseline visible without requesting re-entry and preserves a dirty draft while toggling stacked PDF access", async () => {
+    mount(); await open();
+    expect(screen.getByText("Source TTC · locked independently")).toBeVisible();
+    expect(screen.queryByLabelText("Final TTC on original PDF (€)")).toBeNull();
+    const pdf = screen.getByTitle("Original contractor PDF");
+    const pane = pdf.closest("aside")!;
+    expect(pane).toHaveAttribute("data-source-open", "false");
+    const toggle = screen.getByRole("button", { name: "Show source PDF alongside review" });
+    expect(toggle).toHaveAttribute("aria-controls", pane.id);
+    fireEvent.change(screen.getByLabelText("French header"), { target: { value: "Kept while checking PDF" } });
+    fireEvent.click(toggle);
+    expect(pane).toHaveAttribute("data-source-open", "true");
+    expect(screen.getByRole("link", { name: "Open PDF in new tab" })).toHaveAttribute("href", "/api/devis/42/pdf?variant=original");
+    fireEvent.click(screen.getByRole("button", { name: "Hide source PDF" }));
+    expect(pane).toHaveAttribute("data-source-open", "false");
+    expect(screen.getByTitle("Original contractor PDF")).toBe(pdf);
+    expect(screen.getByLabelText("French header")).toHaveValue("Kept while checking PDF");
+    expect(saves).toHaveLength(0);
+  });
+  it("saves wording without a source baseline while requiring confirmation for actual financial edits", async () => {
+    persisted.baseline = null;
+    mount(); await open();
+    fireEvent.change(screen.getByLabelText("French header"), { target: { value: "Wording only correction" } });
+    expect(screen.queryByLabelText("Final TTC on original PDF (€)")).toBeNull();
+    expect(screen.getByText(/Unsaved wording · can be saved/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+    await waitFor(() => expect(saves).toHaveLength(1));
+    expect(saves[0].headerFr).toBe("Wording only correction");
+    expect(saves[0].lines).toEqual(fixture().draft.lines);
+    await row(1);
+    fireEvent.change(screen.getByLabelText("Line amount HT (€)"), { target: { value: "1800.00" } });
+    expect(await screen.findByRole("region", { name: "Confirm source TTC" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save correction" })).toBeDisabled();
+    expect(saves).toHaveLength(1);
+  });
+  it("keeps unsaved wording through a non-overlapping background snapshot refresh", async () => {
+    const { client } = mount(); await open();
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /I reviewed the original PDF/ })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("French header"), { target: { value: "Do not reset my draft" } });
+    const fresh = fixture();
+    fresh.version = "context-refresh-v2";
+    fresh.draft.lines[1].descriptionEn = "New saved wording on another row";
+    persisted = fresh;
+    act(() => { client.setQueryData<ArchitectCorrectionSnapshot>(["/api/devis", 42, "architect-correction"], fresh); });
+    await row(2);
+    await waitFor(() => expect(screen.getByLabelText("English translation")).toHaveValue("New saved wording on another row"));
+    fireEvent.click(screen.getByRole("button", { name: /Header & overview/ }));
+    expect(screen.getByLabelText("French header")).toHaveValue("Do not reset my draft");
+    expect(screen.getByRole("button", { name: "Save correction" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+    await waitFor(() => expect(saves).toHaveLength(1));
+    expect(saves[0].expectedVersion).toBe("context-refresh-v2");
+    expect(saves[0].headerFr).toBe("Do not reset my draft");
+    expect(saves[0].lines[1].descriptionEn).toBe("New saved wording on another row");
+  });
+  it("keeps ordinary wording edits and save available after optional English suggestions fail", async () => {
+    const fallback = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, options?: RequestInit) => url.endsWith("/translation-suggestions")
+      ? response({ message: "AI service busy" }, 503) : fallback(url, options));
+    mount(); await open();
+    fireEvent.click(screen.getByRole("button", { name: "Fill empty English fields" }));
+    await screen.findByText(/Optional English suggestions unavailable/);
+    fireEvent.change(screen.getByLabelText("English header"), { target: { value: "My manual wording" } });
+    expect(screen.getByRole("button", { name: "Save correction" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+    await waitFor(() => expect(saves[0]?.headerEn).toBe("My manual wording"));
   });
   it("protects committed finances while retaining text control, and exposes load retry", async () => {
     persisted.financialBlockedReason = "Progress claims already reference these prices.";

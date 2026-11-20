@@ -1,16 +1,26 @@
 import { useSyncExternalStore } from "react";
 
-type Work = { blocked: boolean; message: string };
+type Work = { blocked: boolean; message: string; document?: string };
 const work = new Map<number, Map<string, Work>>();
 const versions = new Map<number, number>();
 const listeners = new Set<() => void>();
-export function setQuotationWork(id: number, key: string, blocked: boolean, message = "") {
+export function setQuotationWork(id: number, key: string, blocked: boolean, message = "", document?: string) {
   const entries = work.get(id) ?? new Map<string, Work>();
   const old = entries.get(key);
-  if (old?.blocked === blocked && old.message === message) return;
-  entries.set(key, { blocked, message }); work.set(id, entries);
+  if (!blocked && !old || old?.blocked === blocked && old.message === message && old.document === document) return;
+  if (blocked) { entries.set(key, { blocked, message, document }); work.set(id, entries); }
+  else { entries.delete(key); if (!entries.size) work.delete(id); }
   versions.set(id, (versions.get(id) ?? 0) + 1);
   listeners.forEach(listener => listener());
+}
+/** A recovered save may finish after its original editing surface unmounted.
+ * Clear only queue blockers for the exact persisted document, never debounce,
+ * upload, request or differing-draft blockers. */
+export function settleSavedContextWork(id: number, lineItemId: number, document: string) {
+  for (const [key, entry] of Array.from(work.get(id)?.entries() ?? [])) {
+    if (new RegExp(`^context:[^:]+:${lineItemId}$`).test(key) && entry.document === document)
+      setQuotationWork(id, key, false);
+  }
 }
 export function quotationWorkBlocked(id: number, exceptKey?: string) {
   return Array.from(work.get(id)?.entries() ?? []).some(([key, entry]) => key !== exceptKey && entry.blocked);

@@ -440,6 +440,7 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
       onClick={onClick}
       disabled={!!conflict || uploading}
       title={label}
+      aria-label={label}
       data-testid={testId}
     >
       {icon}
@@ -470,7 +471,8 @@ export function DevisLineContextEditor({ devisId, lineItemId, lineNumber, contex
         <div className="text-[10px] uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
           Context (shown in the translated PDF)
         </div>
-        <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-muted-foreground" data-testid={`status-context-save-${devisId}-${lineNumber}`}>
+        <span role="status" aria-live="polite" className="ml-auto inline-flex items-center gap-1 text-[10px] text-muted-foreground" data-testid={`status-context-save-${devisId}-${lineNumber}`}>
+          {saveState === "idle" && (debounceRef.current ? "Unsaved · saving shortly" : "Autosave ready")}
           {saveState === "saving" && (<><Loader2 className="h-3 w-3 animate-spin" /> Saving…</>)}
           {saveState === "saved" && (<><Check className="h-3 w-3 text-emerald-600" /> Saved</>)}
           {saveState === "conflict" && (<><AlertTriangle className="h-3 w-3 text-destructive" /> Edited elsewhere</>)}

@@ -3,7 +3,7 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
 import type { ContextDoc } from "@shared/context-doc";
 import type { DevisLineContext } from "@shared/schema";
-import { setQuotationWork } from "./quotation-review-state";
+import { setQuotationWork, settleSavedContextWork } from "./quotation-review-state";
 import { keepContextDraft, readContextDraft } from "./context-draft-backup";
 
 export type ContextSaveState = "idle" | "saving" | "saved" | "conflict" | "error";
@@ -43,7 +43,8 @@ export function useContextSaveQueue(
   const [conflict, setConflict] = useState<{ revision: number; document: ContextDoc; mine: ContextDoc; base: ContextDoc | null } | null>(null);
   const pausedRef = useRef(false);
   const workKey = `context:${workScope}:${lineItemId}`;
-  const markWork = (blocked: boolean, message = "") => setQuotationWork(devisId, workKey, blocked, message);
+  const markWork = (blocked: boolean, message = "") => setQuotationWork(devisId, workKey, blocked, message,
+    blocked ? pendingDocRef.current ? JSON.stringify(pendingDocRef.current) : inFlightDocStrRef.current ?? undefined : undefined);
 
   const pendingDocRef = useRef<ContextDoc | null>(recovered.current?.document ?? null);
   const inFlightRef = useRef(false);
@@ -129,6 +130,7 @@ export function useContextSaveQueue(
     markWork(true, "Line context is saving.");
     try {
       const saved = await putDocument(doc);
+      settleSavedContextWork(devisId, lineItemId, JSON.stringify(saved.document));
       revisionRef.current = saved.revision;
       lastSavedStrRef.current = docStr;
       settleBackup(doc, saved.revision);
@@ -151,6 +153,7 @@ export function useContextSaveQueue(
             // Self-conflict: the server already holds exactly this content
             // (a duplicate save landed first). Nothing to redo.
             lastSavedStrRef.current = docStr;
+            settleSavedContextWork(devisId, lineItemId, docStr);
             revisionRef.current = latest!.revision;
             settleBackup(doc, latest!.revision);
             rebasedRef.current = false;

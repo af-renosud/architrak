@@ -3,10 +3,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { apiRequest } from "@/lib/queryClient";
 import { quotationWorkBlocked, useQuotationWork } from "./quotation-review-state";
+import type { QuotationIssue } from "@shared/quotation-decision";
 
-export interface TranslationReadiness { version: string; status: string; blockers: Array<{ key: string; message: string }> }
-export function QuotationApprovalReview({ devisId, onLocate, disabled = false, onRefreshWorking, onCloseEditor }: {
-  devisId: number; onLocate: (key: string) => void; disabled?: boolean; onRefreshWorking?: () => Promise<unknown>; onCloseEditor?: () => void;
+export type TranslationReadinessBlocker = Pick<QuotationIssue, "key" | "message"> & Partial<Omit<QuotationIssue, "key" | "message">>;
+export interface TranslationReadiness {
+  version: string; status: string; blockers: TranslationReadinessBlocker[];
+  sendingPrerequisites?: QuotationIssue[];
+}
+export function QuotationApprovalReview({ devisId, onLocate, disabled = false, onRefreshWorking, onCloseEditor, onReadiness }: {
+  devisId: number; onLocate: (key: string, target?: QuotationIssue["target"]) => void; disabled?: boolean;
+  onRefreshWorking?: () => Promise<unknown>; onCloseEditor?: () => void; onReadiness?: (readiness: TranslationReadiness) => void;
 }) {
   const client = useQueryClient();
   const work = useQuotationWork(devisId);
@@ -15,6 +21,8 @@ export function QuotationApprovalReview({ devisId, onLocate, disabled = false, o
   const lock = useRef(false);
   const refreshRef = useRef(onRefreshWorking);
   refreshRef.current = onRefreshWorking;
+  const readinessRef = useRef(onReadiness);
+  readinessRef.current = onReadiness;
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncEpoch, setSyncEpoch] = useState(0);
@@ -30,6 +38,7 @@ export function QuotationApprovalReview({ devisId, onLocate, disabled = false, o
     enabled: !work.blocked, retry: false, staleTime: 0,
   });
   useEffect(() => { setReviewedVersion(null); }, [work.epoch, readiness.data?.version]);
+  useEffect(() => { if (readiness.data) readinessRef.current?.(readiness.data); }, [readiness.data]);
   useEffect(() => {
     if (!readiness.data || !refreshRef.current) return;
     let active = true;
@@ -65,21 +74,40 @@ export function QuotationApprovalReview({ devisId, onLocate, disabled = false, o
     <div><h3 className="text-sm font-semibold">Review and approve</h3>
       <p className="text-xs mt-1">Compare with the original PDF. Save only if you made changes, then confirm your review and approve. No correction is required when the quotation is already correct.</p></div>
     <p role="status" data-workflow-attention={work.blocked || undefined} className="text-xs">{work.blocked ? "Unsaved work · approval is blocked until all saves and image uploads settle." :
-      readiness.isFetching || syncing ? "Checking the latest saved quotation…" : approved ? "Approved · this saved version is ready to share." : "Saved version · original PDF remains the legal reference."}</p>
+      readiness.isFetching || syncing ? "Checking the latest saved quotation…" : approved ? "Approved saved translation · sending requirements are checked separately." : "Saved version · original PDF remains the legal reference."}</p>
     {work.issues.map(issue => {
       const match = issue.key.match(/^(?:context(?:-[a-z]+)?|image-request):(?:(?:inline|workspace):)?(\d+)/);
       return <div key={issue.key} className="text-xs">
         <span>{issue.message}</span>
         {match && <Button type="button" variant="ghost" className="underline" size="sm"
-          onClick={() => issue.key.includes(":inline:") && onCloseEditor ? onCloseEditor() : onLocate(`line-${match[1]}`)}>
+          onClick={() => issue.key.includes(":inline:") && onCloseEditor ? onCloseEditor() :
+            onLocate(`line-${match[1]}`, { section: "translation", rowId: Number(match[1]), field: "context" })}>
           {issue.key.includes(":inline:") && onCloseEditor ? "Close editor to resolve inline context" : "Go to context"}</Button>}
       </div>;
     })}
     {work.blocked && <p className="text-xs">You can close this editor without discarding context. Resolve any failed save or conflicting edit in the affected context box; approval stays protected until it is saved.</p>}
     {readiness.isError && <div role="alert" className="text-xs">Checklist could not be loaded. Approval is unavailable. <Button size="sm" variant="outline" onClick={() => void readiness.refetch()}>Retry checklist</Button></div>}
     {syncError && <div role="alert" className="text-xs">{syncError} <Button type="button" size="sm" variant="outline" onClick={() => setSyncEpoch(value => value + 1)}>Retry working quotation</Button></div>}
-    {!work.blocked && readiness.data?.blockers.map((blocker, index) => <button type="button" key={`${blocker.key}-${index}`}
-      onClick={() => onLocate(blocker.key)} className="block text-left text-xs underline underline-offset-4">{blocker.message}</button>)}
+    {!work.blocked && readiness.data && ([
+      { id: "source", title: "Source & figures", matches: (issue: TranslationReadinessBlocker) =>
+        issue.target?.section === "source" || issue.target?.section === "financial" || !!issue.code?.startsWith("SOURCE_") },
+      { id: "content", title: "Saved content", matches: (issue: TranslationReadinessBlocker) =>
+        issue.target?.section !== "source" && issue.target?.section !== "financial" && !issue.code?.startsWith("SOURCE_") },
+    ]).map(group => {
+      const issues = readiness.data.blockers.filter(group.matches);
+      return <section key={group.id} className="review-checklist-group space-y-2" aria-label={group.title}>
+        <h4 className="text-xs font-semibold">{group.title}</h4>
+        {issues.length ? issues.map((blocker, index) => <button type="button" key={`${blocker.key}-${index}`}
+          onClick={() => onLocate(blocker.key, blocker.target)} className="block text-left text-xs underline underline-offset-4">{blocker.message}</button>)
+          : <p className="text-xs text-muted-foreground">No approval blockers reported for this saved version.</p>}
+      </section>;
+    })}
+    <details className="text-xs border-t pt-2">
+      <summary className="cursor-pointer font-semibold">Sending prerequisites · separate from translation approval</summary>
+      <p className="mt-2 text-muted-foreground">Client-link, commercial and signature requirements are checked when you send. They are not additional translation approval checks.</p>
+      {!!readiness.data?.sendingPrerequisites?.length && <ul className="mt-2 space-y-1">{readiness.data.sendingPrerequisites.map(issue =>
+        <li key={`${issue.code}:${issue.key}`}>{issue.message}</li>)}</ul>}
+    </details>
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
     {!approved && <>
       <label className="flex items-start gap-2 text-xs"><input type="checkbox" checked={!!reviewedVersion && reviewedVersion === readiness.data?.version}
