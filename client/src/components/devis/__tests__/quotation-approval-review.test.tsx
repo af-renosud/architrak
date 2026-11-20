@@ -24,6 +24,33 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 describe("latest reviewed approval token", () => {
+  it("distinguishes an unrecorded source check from missing VAT and an actual discrepancy while keeping every action visible", async () => {
+    blockers = [
+      { key: "source", code: "SOURCE_CONFIRMATION_REQUIRED", message: "Financial backstop required",
+        target: { section: "source", field: "sourceTtc" } },
+      { key: "line-102", code: "VAT_MISSING", message: "Item 2: VAT rate is missing. Copy it from the PDF.",
+        target: { section: "financial", rowId: 102, field: "vatRate" } },
+      { key: "line-103", code: "VAT_MISSING", message: "Item 3: VAT rate is missing. Copy it from the PDF.",
+        target: { section: "financial", rowId: 103, field: "vatRate" } },
+      { key: "totals", code: "TTC_MISMATCH", message: "Working total differs from the original PDF by 16,33 €.",
+        target: { section: "financial", field: "totalHt" } },
+    ];
+    const locate = vi.fn();
+    mount(locate);
+    const figures = within(await screen.findByRole("region", { name: "Source & figures" }));
+    const source = figures.getByRole("button", { name: /not recorded yet — not a known discrepancy/ });
+    expect(source).toBeVisible();
+    expect(figures.getAllByRole("button", { name: /VAT rate is missing/ })).toHaveLength(2);
+    expect(figures.getByRole("button", { name: /differs from the original PDF/ })).toBeVisible();
+    expect(within(figures.getByLabelText("About the total difference")).getByRole("button", { name: "Why am I seeing this?" })).toBeVisible();
+    expect(within(figures.getByLabelText("About missing financial information")).getByRole("button", { name: "Why am I seeing this?" })).toBeVisible();
+    expect(figures.getAllByRole("button", { name: "Why am I seeing this?" })).toHaveLength(2);
+    expect(screen.queryByText("Financial backstop required")).toBeNull();
+    fireEvent.click(source);
+    expect(locate).toHaveBeenCalledWith("source", { section: "source", field: "sourceTtc" });
+    expect(screen.getByRole("button", { name: "Approve reviewed quotation" })).toBeDisabled();
+    expect(api.mock.calls.every(([method]) => method === "GET")).toBe(true);
+  });
   it("groups source/figures and saved content and passes structured navigation targets without interpreting messages", async () => {
     const target: QuotationIssue["target"] = { section: "financial", rowId: 102, field: "vatRate", page: 4 };
     blockers = [{ key: "opaque", code: "FINANCIAL_FIELD_REQUIRED", message: "Vérifier la donnée", target },

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { extractedSourceTotal } from "./quotation-source-total-suggestion";
 import { quotationParagraph } from "../../shared/quotation-paragraph";
 import { PDFDocument } from "pdf-lib";
 import type pg from "pg";
@@ -78,6 +79,7 @@ async function snapshot(client: Reader, s: State): Promise<ArchitectCorrectionSn
   if (s.baseline) actor = (await client.query("SELECT COALESCE(NULLIF(trim(concat_ws(' ',first_name,last_name)),''),email) actor FROM users WHERE id=$1", [s.baseline.actor_id])).rows[0]?.actor ?? "Architect";
   const evidence = s.quotation.ai_extracted_data;
   return { version: version(s), draft: draftFrom(s), ...protection(s),
+    extractedSourceTotal: extractedSourceTotal(evidence),
     workingTotals: { ht: s.quotation.amount_ht ?? "", ttc: s.quotation.amount_ttc ?? "" },
     baseline: s.baseline ? { ttc: s.baseline.ttc, sourceFileName: s.baseline.source_file_name,
       sourceDigest: s.baseline.source_digest, confirmedAt: new Date(s.baseline.created_at).toISOString(), confirmedBy: actor } : null,

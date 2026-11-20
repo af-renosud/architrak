@@ -29,6 +29,13 @@ describe("coherent quotation review preflight", () => {
     snapshot.quotation.aiExtractedData = { documentType: "quotation" };
     expect((await quotationReviewReadiness(901))?.blockers[0].code).toBe("SOURCE_CONFIRMATION_REQUIRED");
   });
+  it("shows missing VAT before confirmation so it is not a surprise afterwards", async () => {
+    snapshot.quotation.aiExtractedData = { documentType: "quotation" };
+    snapshot.draft.lines[0].vatRate = "";
+    const result = await quotationReviewReadiness(901);
+    expect(result?.blockers.map(i => i.code)).toEqual(["SOURCE_CONFIRMATION_REQUIRED", "VAT_MISSING"]);
+    expect(result?.blockers[1].target.field).toBe("vatRate");
+  });
   it("binds the reviewed version to context, source confirmation and figures", async () => {
     const first = await quotationReviewReadiness(901);
     snapshot.translation!.contextsVersion++;

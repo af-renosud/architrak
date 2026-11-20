@@ -66,13 +66,22 @@ export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, ac
     }
     if (!humanReviewed) {
       if (parsed && (parsed.documentType === "quotation" || Array.isArray(parsed.lineItems))
-        && !parsed.pricedItemVerification && !parsed.illustratedRecovery && !parsed.quotationVerification)
-        add("SOURCE_CONFIRMATION_REQUIRED", "This quotation has no source-verification receipt. Review the original PDF in Edit working quotation and confirm its source total before approval.", "source");
+        && !parsed.pricedItemVerification && !parsed.illustratedRecovery && !parsed.quotationVerification) {
+        add("SOURCE_CONFIRMATION_REQUIRED", "Confirm the original quotation total. A check against the original PDF has not been recorded; this does not mean the amount is wrong. Compare the VAT-inclusive total with the PDF and confirm whether it matches.", "source");
+      }
       else if (parsed?.illustratedRecovery || parsed?.quotationVerification) {
         // Priced evidence was already evaluated above.
         issues.push(...workingCoverageIssues({ ...parsed, pricedItemVerification: undefined }, s.lines));
       }
     }
+  }
+  // Any route into human source confirmation should reveal known financial gaps
+  // before that confirmation, not spring a second checklist on the operator.
+  if (!s.baseline && issues.some(issue => ["SOURCE_CONFIRMATION_REQUIRED", "DESCRIPTION_CHARGE_UNVERIFIED",
+    "COVERAGE_INCOMPLETE", "SOURCE_RECEIPT_OUTDATED", "SOURCE_ROWS_CHANGED", "SOURCE_INVENTORY_CHANGED",
+    "PAGES_NOT_EXTRACTED", "PAGE_ITEMS_MISSING"].includes(issue.code))) {
+    issues.push(...quotationFinancialIssues(s.draft, null).filter(issue => issue.code !== "SOURCE_CONFIRMATION_REQUIRED"
+      && !issues.some(existing => existing.code === issue.code && existing.key === issue.key)));
   }
   if (action === "client_link") {
     if (d.accountingState === "provisional") add("ACCOUNTING_PROVISIONAL", "Resolve the provisional quotation before publishing it.", "lifecycle");

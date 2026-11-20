@@ -30,7 +30,7 @@ describe("human approval authority, separate from automatic quality diagnostics"
     confirmFixture(snapshot); snapshot.hasCorrection = true;
     expect(await quotationApprovalBlocker(901, { reviewing: true })).toBeNull();
     snapshot.baseline!.ttc = "121.00";
-    expect(await quotationApprovalBlocker(901)).toContain("TTC differs");
+    expect(await quotationApprovalBlocker(901)).toContain("don't match the original total");
   });
   it("retains strict automatic coverage for an unreviewed import", async () => {
     expect(await quotationApprovalBlocker(901)).toContain("unverified");
@@ -47,6 +47,6 @@ describe("human approval authority, separate from automatic quality diagnostics"
   });
   it("requests scoped review of historical extraction without a receipt", async () => {
     snapshot.quotation.aiExtractedData = { documentType: "quotation" };
-    expect(await quotationApprovalBlocker(901)).toContain("no source-verification receipt");
+    expect(await quotationApprovalBlocker(901)).toContain("does not mean the amount is wrong");
   });
 });

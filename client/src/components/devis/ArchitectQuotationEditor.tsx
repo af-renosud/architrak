@@ -21,6 +21,7 @@ import { quotationWorkBlocked, setQuotationWork, useQuotationWork } from "./quot
 import { keepQuotationDraft, readQuotationDraft } from "./quotation-draft-backup";
 import type { QuotationReviewTarget } from "./QuotationExceptions";
 import { quotationFieldLabel } from "./quotation-review-labels";
+import { SourceTotalHelp } from "./SourceTotalHelp";
 import { needsSourceConfirmation, quotationEditorField, quotationTargetRowId } from "./quotation-review-target";
 import type { QuotationIssue } from "@shared/quotation-decision";
 import "./architect-correction.css";
@@ -54,6 +55,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [baselineTtc, setBaselineTtc] = useState("");
+  const [sourceTotalChoice, setSourceTotalChoice] = useState<"match" | "manual" | null>(null);
   const [baselinePage, setBaselinePage] = useState("");
   const [pdfConfirmed, setPdfConfirmed] = useState(false);
   const [target, setTarget] = useState("");
@@ -107,6 +109,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   useEffect(() => {
     if (!open || !snapshot.data || snapshot.isFetching || initialized.current) return;
     initialized.current = true;
+    setBaselineTtc(""); setBaselinePage(""); setPdfConfirmed(false); setSourceTotalChoice(null);
     const backup = readQuotationDraft(devisId);
     const recovered = backup ? mergeQuotationDraft(backup.original.draft, backup.draft, snapshot.data.draft) : null;
     setOriginal(structuredClone(backup && recovered?.conflicts.length ? backup.original : snapshot.data));
@@ -193,7 +196,16 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   const numericEditable = editable && financialAllowed;
   const sourceConfirmationRequired = !original?.baseline && (financialDirty || !!readiness?.blockers.some(issue =>
     needsSourceConfirmation(issue.code)));
-  const sourceTtcInput = baselineTtc.replace(/[ \u00a0\u202f]/g, "").replace(",", ".");
+  // Only the original stored extraction may supply this suggestion, never working totals.
+  const extractedTtc = original?.extractedSourceTotal?.ttc;
+  const sourceSuggestion = typeof extractedTtc === "string" && /^\d{1,10}(?:\.\d{1,2})?$/.test(extractedTtc) ? extractedTtc : null;
+  const sourceTtcInput = (sourceTotalChoice === "match" ? sourceSuggestion ?? "" : baselineTtc).replace(/[ \u00a0\u202f]/g, "").replace(",", ".");
+  const proposedSourceTtc = sourceSuggestion && sourceTotalChoice !== "manual" ? sourceSuggestion : sourceTtcInput;
+  let provisionalDifference: string | null = null;
+  if (totals.value && /^\d+(?:\.\d{1,2})?$/.test(proposedSourceTtc)) {
+    try { provisionalDifference = correctionMoney(correctionCents(totals.value.ttc) - correctionCents(proposedSourceTtc)); }
+    catch { /* Invalid source input remains unconfirmed; no comparison is asserted. */ }
+  }
   const sourceConfirmationHint = !sourceTtcInput ? "Enter the final VAT-inclusive total printed on the original PDF."
     : !/^\d+(?:\.\d{1,2})?$/.test(sourceTtcInput) ? "Use an amount such as 75059.00 or 75 059,00, with no more than two decimal places."
       : !/^[1-9]\d*$/.test(baselinePage) ? "Enter the PDF page number where that total is printed."
@@ -211,9 +223,9 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     setSelection(null); setTarget(""); setLocateRequest(value => value + 1);
   };
   const validationMessage = financialDirty
-    ? !original?.baseline ? "Confirm the source TTC from the original PDF before saving financial changes."
+    ? !original?.baseline ? "Confirm the original PDF total including VAT before saving financial changes."
       : totals.error ?? (difference === null ? "Source totals could not be read."
-        : difference !== "0.00" ? "The batch TTC must equal the locked source TTC before financial changes can be saved." : null)
+        : difference !== "0.00" ? "Working total including VAT must match the confirmed original PDF total before financial changes can be saved." : null)
     : null;
   const updateDraft = (change: Partial<ArchitectCorrectionDraft>) => {
     setDraft(previous => previous ? { ...previous, ...change } : previous);
@@ -289,7 +301,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     finally { setRecoveringVat(false); }
   };
   const establishBaseline = async () => {
-    if (!original || !pdfConfirmed || !baselineTtc || !/^[1-9]\d*$/.test(baselinePage)
+    if (!original || original.baseline || !pdfConfirmed || !sourceTtcInput || !/^[1-9]\d*$/.test(baselinePage)
       || submitLock.current || !editable || stale) return;
     let ttc: string;
     try {
@@ -305,7 +317,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
       if (!mounted.current) return;
       // Establishing source evidence does not overwrite unsaved content.
       setOriginal(result);
-      toast({ title: "Source TTC locked", description: "Your unsaved correction has been preserved." });
+      toast({ title: "Original PDF total confirmed", description: "Your working figures and unsaved wording have not been changed." });
     } catch (cause) { reportError(cause); }
     finally { submitLock.current = false; }
   };
@@ -416,6 +428,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
               {(financialIssues.length > 0 || vatRecoveryMessage) && <section className="rounded-lg border border-amber-300 p-4 space-y-3" aria-label="Financial checks">
                 <h3 className="font-semibold text-sm">{financialIssues.length ? `Financial checks — ${financialIssues.length} fields need attention` : "Recovered VAT — review before saving"}</h3>
                 <p className="text-xs">Your wording and context can still be saved. Approval requires the actual VAT and amounts from the original PDF; no rates are assumed.</p>
+                {financialIssues.length > 0 && <SourceTotalHelp kind="missing" />}
                 <a className="text-xs underline" href={`/api/devis/${devisId}/pdf?variant=original`} target="_blank" rel="noreferrer">Open original PDF alongside this editor</a>
                 {original.baseline && <div><Button type="button" size="sm" variant="outline" disabled={!numericEditable || stale || financialDirty} onClick={() => void recoverVat()}>
                   {recoveringVat ? "Reading original PDF…" : "Recover missing VAT from original PDF"}
@@ -441,7 +454,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
               {original.baseline ? <div data-quotation-field="sourceTtc" tabIndex={-1}
                 className="correction-banner rounded-lg px-4 py-3 flex flex-wrap justify-between gap-3">
                 <div className="flex items-start gap-2"><LockKeyhole size={14} className="mt-0.5" /><div>
-                  <p className="text-[10px] uppercase tracking-wider font-semibold">Source TTC · locked independently</p>
+                  <p className="text-[10px] uppercase tracking-wider font-semibold">Original PDF total including VAT · confirmed</p>
                   <p className="text-[11px] text-muted-foreground mt-1">{original.baseline.sourceFileName} · confirmed by {original.baseline.confirmedBy}</p>
                 </div></div><p className="correction-number text-lg font-semibold">{euro(original.baseline.ttc)}</p>
               </div> : <div className="space-y-2">
@@ -450,13 +463,35 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                   onClick={() => setSourceConfirmationOpen(value => !value)}>Confirm source total (optional)</Button>}
                 {(sourceConfirmationRequired || sourceConfirmationOpen) && <section id={`source-confirmation-${devisId}`}
                   className="correction-banner rounded-lg p-4 space-y-3" aria-label="Confirm source TTC">
-                <div className="flex items-start gap-2"><FileText size={16} className="shrink-0 mt-0.5" /><div><h3 className="text-xs font-semibold">Establish the financial backstop from the PDF</h3>
-                  <p className="text-[11px] text-muted-foreground mt-1">Use this manual backstop when source confirmation or financial changes require it. Read the original PDF and transcribe its final TTC once. A source-verified, unchanged quotation does not need re-entry. This confirmation cannot be changed by ordinary edits.</p></div></div>
+                <div className="flex items-start gap-2"><FileText size={16} className="shrink-0 mt-0.5" /><div><h3 className="text-xs font-semibold">Confirm the original PDF total including VAT</h3>
+                  <p className="text-[11px] text-muted-foreground mt-1">This check has not been recorded yet; that does not mean the total is wrong. Compare the final TTC with the original PDF, enter its page and confirm below. {sourceConfirmationRequired ? "Confirmation is needed before approval or saving financial changes." : "The current checklist does not require this optional confirmation."}</p>
+                  <SourceTotalHelp /></div></div>
+                {sourceSuggestion ? <div className="space-y-2">
+                  <p className="text-xs">Total read from the original PDF (TTC): <strong className="correction-number">{euro(sourceSuggestion)}</strong> · check against the PDF before confirming.</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" variant="outline" aria-pressed={sourceTotalChoice === "match"}
+                      data-quotation-field={sourceTotalChoice === null ? "sourceTtc" : undefined}
+                      disabled={!editable || stale} onClick={() => { setSourceTotalChoice("match"); setPdfConfirmed(false); setSourceOpen(true); }}>Matches the PDF</Button>
+                    <Button type="button" size="sm" variant="outline" aria-pressed={sourceTotalChoice === "manual"}
+                      disabled={!editable || stale} onClick={() => { setSourceTotalChoice("manual"); setPdfConfirmed(false); setRequestedField("sourceTtc"); setLocateRequest(value => value + 1); setSourceOpen(true); }}>Enter a different total</Button>
+                  </div>
+                </div> : <p className="text-xs">No total is available from the original extraction. Enter the final TTC printed on the original PDF.</p>}
+                <div className="text-xs space-y-1 border-t border-[#d8cbb9] pt-3" aria-label="Provisional total comparison">
+                  <p className="font-semibold">Provisional comparison · original PDF total not yet confirmed</p>
+                  {totals.value ? <>
+                    <p>Computed working TTC: <strong className="correction-number">{euro(totals.value.ttc)}</strong>
+                      {provisionalDifference !== null && <> · Proposed original TTC: <strong className="correction-number">{euro(proposedSourceTtc)}</strong></>}</p>
+                    <p>{provisionalDifference === null ? "Enter the original PDF total to compare before confirming."
+                      : provisionalDifference === "0.00" ? "No difference in these figures; the original PDF still needs your confirmation."
+                        : `Working minus proposed original TTC: ${euro(provisionalDifference)}. Confirming the original will not balance this difference; review the working figures separately.`}</p>
+                  </> : <p>Working TTC cannot yet be calculated. Resolve missing VAT or other financial fields shown above. Confirming the original PDF total does not resolve those gaps.</p>}
+                </div>
                 <div className="grid gap-3 md:grid-cols-[1fr_120px_auto] items-end">
-                  <DraftField label="Final TTC on original PDF (€)" field="sourceTtc" value={baselineTtc} onChange={setBaselineTtc} numeric disabled={!editable || stale} />
-                  <DraftField label="PDF page" value={baselinePage} onChange={setBaselinePage} numeric disabled={!editable || stale} />
+                  {(!sourceSuggestion || sourceTotalChoice === "manual") ? <DraftField label="Final TTC on original PDF (€)" field="sourceTtc" value={baselineTtc} onChange={value => { setBaselineTtc(value); setPdfConfirmed(false); }} numeric disabled={!editable || stale} />
+                    : <p className="text-xs">{sourceTotalChoice === "match" ? `Selected original PDF total: ${euro(sourceSuggestion)}` : "Choose whether this amount matches the original PDF."}</p>}
+                  <DraftField label="PDF page" value={baselinePage} onChange={value => { setBaselinePage(value); setPdfConfirmed(false); if (/^[1-9]\d*$/.test(value)) setSourcePage(Number(value)); }} numeric disabled={!editable || stale} />
                   <Button type="button" size="sm" variant="outline" disabled={!editable || stale || !pdfConfirmed || !/^\d+(?:\.\d{1,2})?$/.test(sourceTtcInput) || !/^[1-9]\d*$/.test(baselinePage)}
-                    onClick={() => void establishBaseline()}><LockKeyhole size={13} className="mr-2" />{baseline.isPending ? "Confirming…" : "Lock source TTC"}</Button>
+                    onClick={() => void establishBaseline()}><LockKeyhole size={13} className="mr-2" />{baseline.isPending ? "Confirming…" : "Confirm original PDF total"}</Button>
                 </div>
                 <div className="flex items-start gap-2 text-[11px]"><input id={confirmId} type="checkbox" checked={pdfConfirmed}
                   disabled={!editable || stale} onChange={event => setPdfConfirmed(event.target.checked)} className="mt-0.5 accent-[#0b2545]" />
@@ -618,7 +653,8 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                   <p className="correction-label mb-1">Working TTC <span className="normal-case tracking-normal font-normal">· exact-cent preview</span></p>
                   <div className="flex flex-wrap items-baseline gap-3">
                     <strong className="correction-number text-xl">{totals.value ? euro(totals.value.ttc) : "Not yet computable"}</strong>
-                    {difference !== null && <span className={`text-[11px] ${difference === "0.00" ? "text-emerald-800" : "text-amber-900"}`}>{difference === "0.00" ? <span className="inline-flex gap-1 items-center"><Check size={12} />Matches source TTC</span> : `Difference ${euro(difference)}`}</span>}
+                    {difference !== null && <span className={`text-[11px] ${difference === "0.00" ? "text-emerald-800" : "text-amber-900"}`}>{difference === "0.00" ? <span className="inline-flex gap-1 items-center"><Check size={12} />Matches confirmed original PDF total</span> : `Difference from confirmed original PDF total: ${euro(difference)}`}</span>}
+                    {difference !== null && difference !== "0.00" && <SourceTotalHelp kind="difference" />}
                   </div>
                   {validationMessage && <p className="text-[11px] text-amber-900 mt-1 flex gap-1"><TriangleAlert size={12} className="shrink-0 mt-0.5" />{validationMessage}</p>}
                   {totals.error && !financialDirty && <p className="text-[10px] text-muted-foreground mt-1">VAT treatment is incomplete. Text-only corrections remain available; complete figures before a financial batch.</p>}

@@ -155,6 +155,73 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
 describe("architect editor persistence and source authority", () => {
+  it("suggests only the extracted original total and confirms a match deliberately without a dummy edit or save", async () => {
+    persisted.baseline = null;
+    Object.assign(persisted, { extractedSourceTotal: { ttc: "4971.83" } });
+    mount(); await open();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm source total (optional)" }));
+    expect(screen.getByText(/This check has not been recorded yet/)).toBeVisible();
+    expect(screen.getAllByText("4971,83 €")[0]).toBeVisible();
+    expect(screen.getByLabelText("Provisional total comparison")).toHaveTextContent("Computed working TTC: 4955,50 €");
+    expect(screen.getByLabelText("Provisional total comparison")).toHaveTextContent("Working minus proposed original TTC: -16,33 €");
+    expect(screen.getByLabelText("Provisional total comparison")).toHaveTextContent("original PDF total not yet confirmed");
+    expect(screen.getByRole("button", { name: "Confirm original PDF total" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Matches the PDF" }));
+    expect(persisted.baseline).toBeNull();
+    fireEvent.change(screen.getByLabelText("PDF page"), { target: { value: "4" } });
+    expect(screen.getByRole("button", { name: "Confirm original PDF total" })).toBeDisabled();
+    fireEvent.click(screen.getByLabelText(/I have read the original PDF/));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm original PDF total" }));
+    await screen.findByText("Original PDF total including VAT · confirmed");
+    expect(persisted.baseline).toMatchObject({ ttc: "4971.83" });
+    const request = fetchMock.mock.calls.find(([url, options]) => url === `${path}/source-baseline` && options?.method === "POST");
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ expectedVersion: "working-v1", ttc: "4971.83", page: 4, confirmedFromPdf: true });
+    expect(saves).toHaveLength(0);
+    expect(screen.getByLabelText("French header")).toHaveValue(fixture().draft.headerFr);
+    expect(screen.getByRole("button", { name: "Save correction" })).toBeDisabled();
+    expect(screen.getByText(/Difference from confirmed original PDF total/)).toBeVisible();
+  });
+  it("lets the architect replace an extracted suggestion without changing working wording or auto-confirming", async () => {
+    persisted.baseline = null;
+    Object.assign(persisted, { extractedSourceTotal: { ttc: "4971.83" } });
+    mount(); await open();
+    fireEvent.change(screen.getByLabelText("French header"), { target: { value: "Keep my wording" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm source total (optional)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Enter a different total" }));
+    const input = screen.getByLabelText("Final TTC on original PDF (€)");
+    await waitFor(() => expect(input).toHaveFocus());
+    fireEvent.change(input, { target: { value: "4955,50" } });
+    fireEvent.change(screen.getByLabelText("PDF page"), { target: { value: "2" } });
+    fireEvent.click(screen.getByLabelText(/I have read the original PDF/));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm original PDF total" }));
+    await screen.findByText("Original PDF total including VAT · confirmed");
+    expect(persisted.baseline).toMatchObject({ ttc: "4955.50" });
+    expect(screen.getByLabelText("French header")).toHaveValue("Keep my wording");
+    expect(saves).toHaveLength(0);
+  });
+  it.each([null, { ttc: "not an amount" }])("falls back to manual entry for absent or invalid extraction %j", async extractedSourceTotal => {
+    persisted.baseline = null;
+    Object.assign(persisted, { extractedSourceTotal });
+    mount(); await open();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm source total (optional)" }));
+    expect(screen.getByLabelText("Final TTC on original PDF (€)")).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Matches the PDF" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Confirm original PDF total" })).toBeDisabled();
+    expect(saves).toHaveLength(0);
+  });
+  it("keeps missing VAT visible instead of implying that a matching source suggestion repairs it", async () => {
+    persisted.baseline = null;
+    persisted.draft.lines[0].vatRate = "";
+    persisted.extractedSourceTotal = { ttc: "4955.50" };
+    mount(); await open();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm source total (optional)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Matches the PDF" }));
+    expect(screen.getByLabelText("Provisional total comparison")).toHaveTextContent("Working TTC cannot yet be calculated");
+    expect(screen.getByLabelText("Provisional total comparison")).toHaveTextContent("does not resolve those gaps");
+    expect(screen.getByLabelText("Item 1 VAT (%)")).toHaveValue("");
+    expect(persisted.baseline).toBeNull();
+    expect(saves).toHaveLength(0);
+  });
   it("opens from translation even when the source-section trigger is not visible", async () => {
     mount(false, true);
     expect(screen.queryByRole("button", { name: "Edit working quotation" })).not.toBeInTheDocument();
@@ -223,7 +290,7 @@ describe("architect editor persistence and source authority", () => {
     mount(); await open(); await row(1);
     fireEvent.change(screen.getByLabelText("Line amount HT (€)"), { target: { value: "1796.00" } });
     expect(screen.getByRole("button", { name: "Save correction" })).toBeDisabled();
-    expect(screen.getByText(/The batch TTC must equal/)).toBeVisible();
+    expect(screen.getByText(/Working total including VAT must match/)).toBeVisible();
     expect(saves).toHaveLength(0);
     await row(2);
     fireEvent.change(screen.getByLabelText("Line amount HT (€)"), { target: { value: "1794.00" } });
@@ -327,11 +394,12 @@ describe("architect editor persistence and source authority", () => {
     fireEvent.change(screen.getByLabelText("French header"), { target: { value: "Keep this draft" } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm source total (optional)" }));
     fireEvent.change(screen.getByLabelText("Final TTC on original PDF (€)"), { target: { value: amount } });
+    expect(screen.getByLabelText("Provisional total comparison")).toHaveTextContent("No difference in these figures; the original PDF still needs your confirmation.");
     fireEvent.change(screen.getByLabelText("PDF page"), { target: { value: "3" } });
-    expect(screen.getByRole("button", { name: "Lock source TTC" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Confirm original PDF total" })).toBeDisabled();
     fireEvent.click(screen.getByLabelText(/I have read the original PDF/));
-    fireEvent.click(screen.getByRole("button", { name: "Lock source TTC" }));
-    await screen.findByText("Source TTC · locked independently");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm original PDF total" }));
+    await screen.findByText("Original PDF total including VAT · confirmed");
     expect(persisted.baseline).toMatchObject({ ttc: "4955.50" });
     expect(screen.getByLabelText("French header")).toHaveValue("Keep this draft");
     fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
@@ -362,7 +430,7 @@ describe("architect editor persistence and source authority", () => {
         target: { section: "source", field: "sourceTtc", page: 3 } }] }) : fallback(url, options));
     mount(); await open();
     expect(await screen.findByRole("region", { name: "Confirm source TTC" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Confirmer la source" }));
+    fireEvent.click(screen.getByRole("button", { name: code === "SOURCE_CONFIRMATION_REQUIRED" ? /Original PDF total check not recorded yet/ : "Confirmer la source" }));
     await waitFor(() => expect(screen.getByLabelText("Final TTC on original PDF (€)")).toHaveFocus());
     expect(screen.getByTitle("Original contractor PDF")).toHaveAttribute("src", "/api/devis/42/pdf?variant=original#page=3");
     expect(screen.getByRole("button", { name: "Approve reviewed quotation" })).toBeDisabled();
@@ -382,9 +450,11 @@ describe("architect editor persistence and source authority", () => {
     expect(screen.getByTitle("Original contractor PDF")).toHaveAttribute("src", "/api/devis/42/pdf?variant=original#page=5");
   });
   it("keeps a confirmed baseline visible without requesting re-entry and preserves a dirty draft while toggling stacked PDF access", async () => {
+    Object.assign(persisted, { extractedSourceTotal: { ttc: "4971.83" } });
     mount(); await open();
-    expect(screen.getByText("Source TTC · locked independently")).toBeVisible();
+    expect(screen.getByText("Original PDF total including VAT · confirmed")).toBeVisible();
     expect(screen.queryByLabelText("Final TTC on original PDF (€)")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Matches the PDF" })).toBeNull();
     const pdf = screen.getByTitle("Original contractor PDF");
     const pane = pdf.closest("aside")!;
     expect(pane).toHaveAttribute("data-source-open", "false");

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { apiRequest } from "@/lib/queryClient";
 import { quotationWorkBlocked, useQuotationWork } from "./quotation-review-state";
+import { SourceTotalHelp } from "./SourceTotalHelp";
 import type { QuotationIssue } from "@shared/quotation-decision";
 
 export type TranslationReadinessBlocker = Pick<QuotationIssue, "key" | "message"> & Partial<Omit<QuotationIssue, "key" | "message">>;
@@ -97,8 +98,19 @@ export function QuotationApprovalReview({ devisId, onLocate, disabled = false, o
       const issues = readiness.data.blockers.filter(group.matches);
       return <section key={group.id} className="review-checklist-group space-y-2" aria-label={group.title}>
         <h4 className="text-xs font-semibold">{group.title}</h4>
+        {group.id === "source" && issues.some(issue => ["SOURCE_TTC_MISMATCH", "HEADER_TOTAL_MISMATCH", "TTC_MISMATCH"].includes(issue.code ?? "")) &&
+          <div role="group" aria-label="About the total difference"><SourceTotalHelp kind="difference" /></div>}
+        {group.id === "source" && issues.some(issue => issue.target?.section === "financial" &&
+          !["SOURCE_TTC_MISMATCH", "HEADER_TOTAL_MISMATCH", "TTC_MISMATCH"].includes(issue.code ?? "")) &&
+          <div role="group" aria-label="About missing financial information"><SourceTotalHelp kind="missing" /></div>}
         {issues.length ? issues.map((blocker, index) => <button type="button" key={`${blocker.key}-${index}`}
-          onClick={() => onLocate(blocker.key, blocker.target)} className="block text-left text-xs underline underline-offset-4">{blocker.message}</button>)
+          onClick={() => onLocate(blocker.key, blocker.target)} className="block text-left text-xs underline underline-offset-4">{
+            blocker.code === "SOURCE_CONFIRMATION_REQUIRED"
+              ? "Original PDF total check not recorded yet — not a known discrepancy. Compare and confirm the printed total."
+              : blocker.code === "SOURCE_RECEIPT_OUTDATED"
+                ? "The original PDF check is out of date. Review the current original PDF and confirm its total."
+                : blocker.message
+          }</button>)
           : <p className="text-xs text-muted-foreground">No approval blockers reported for this saved version.</p>}
       </section>;
     })}

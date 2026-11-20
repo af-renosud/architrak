@@ -49,8 +49,14 @@ Line review colours and contractor questions have independent lifecycles. Reflag
 
 **How to apply:** Preserve questions across all line updates, show read/edit and withdrawn-history access, and freeze the exact question snapshot before dispatch. Treat a dispatch-frozen question as retryable but not editable, even when delivery fails.
 
-Architect source confirmation records the original PDF digest and independently transcribed TTC. Human corrections and approval are not gated by an OCR manifest or translation semantic model, including legacy illustrated evidence. Financial corrections must reconcile exact cents with actual VAT, discounts and options. Automatic extraction acceptance remains strict.
+Architect source confirmation records the original PDF digest and human-confirmed TTC. The user may explicitly confirm a stored original-extraction total against the PDF without retyping; never substitute a mutable working header or row sum. Human corrections and approval are not gated by an OCR manifest or translation semantic model, including legacy illustrated evidence. Financial corrections must reconcile exact cents with actual VAT, discounts and options. Automatic extraction acceptance remains strict.
 
 **Why:** Stored parser flags survive ordinary description edits; a line-only receipt survives contradictory header edits. Neither is current approval evidence.
 
 **How to apply:** Use version-bound transactional human saves, immutable PDF/TTC receipts and actor/time before-and-after audit. Ordinary Save/Approve distinguishes human review from machine verification. Canonicalize receipt keys; preserve manual translations, source bytes and signed snapshots. Signing corrected packages must contain the original PDF and cannot fall back to translation-only evidence.
+
+Explain source checks in terms of the user's task: a check not recorded, an actual numerical difference, or missing financial information. Never describe a missing internal receipt as proof of an incorrect quotation, or invent an old-import explanation without evidence. Essential reasons and actions stay visible; accessible help supplements them.
+
+**Why:** The user explicitly found internal verification terminology and successive hidden requirements impossible to relate to normal quotation review.
+
+**How to apply:** Show known financial gaps and provisional comparisons before source confirmation; preserve deliberate human confirmation and server safeguards without requiring needless retyping.

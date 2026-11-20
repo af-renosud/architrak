@@ -28,6 +28,8 @@ export type ArchitectBaselineConfirmation = z.infer<typeof architectBaselineConf
 export interface ArchitectCorrectionSnapshot {
   version: string; draft: ArchitectCorrectionDraft;
   workingTotals?: { ht: string; ttc: string };
+  /** Original extraction suggestion only; never an approved total or working-row sum. */
+  extractedSourceTotal?: { ttc: string } | null;
   baseline: { ttc: string; sourceFileName: string; sourceDigest: string; confirmedAt: string; confirmedBy: string } | null;
   blockedReason: string | null; financialBlockedReason: string | null; advisoryMessages: string[];
   history: Array<{ id: number; actor: string; savedAt: string; summary: string }>;
