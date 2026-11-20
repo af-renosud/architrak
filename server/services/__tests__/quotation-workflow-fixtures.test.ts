@@ -23,9 +23,9 @@ describe("synthetic workflow incident fixtures", () => {
   });
   it("roof: financial changes cannot manufacture a new source baseline", () => {
     const draft = roofDraft();
-    expect(correctedFinancialBlocker(draft, null)).toContain("Confirm the source TTC");
+    expect(correctedFinancialBlocker(draft, null)).toContain("Confirm the original quotation total");
     draft.lines[0].totalHt = "101.00";
-    expect(correctedFinancialBlocker(draft, { ttc: "120.00" })).toContain("differs");
+    expect(correctedFinancialBlocker(draft, { ttc: "120.00" })).toContain("don't match the original total");
   });
   it("roof: PostgreSQL numeric JSON and numeric strings produce equivalent financial values", () => {
     const state = { quotation: { ai_extracted_data: { tvaRate: 20 } }, translation: null, baseline: null, state: null,

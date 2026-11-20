@@ -170,6 +170,8 @@ describe("quotation replacement", () => {
   it("renders reciprocal links using the project's actual ?devis= convention", () => {
     const entries = [{ id: 1, oldDevisId: 12, newDevisId: 19, oldLabel: "LOT-04-A", newLabel: "LOT-04-B", note: "Scope revision", actorName: "Camille Moreau", createdAt: "2026-06-12T10:12:00Z" }];
     const view = render(<QuotationReplacementHistory entries={entries} devisId={12} projectId="4" />);
+    expect(screen.getByRole("link")).not.toBeVisible();
+    fireEvent.click(screen.getByText("Replacement history (1)"));
     expect(screen.getByRole("link")).toBeVisible();
     expect(screen.getByText("Replaced by")).toBeVisible();
     expect(screen.getByRole("link")).toHaveAttribute("href", "/projets/4?tab=devis&devis=19");

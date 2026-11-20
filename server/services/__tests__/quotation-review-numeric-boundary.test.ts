@@ -11,6 +11,6 @@ describe("unchanged review at the PostgreSQL JSON boundary", () => {
     const draft = draftFrom(state);
     expect(draft.lines[0]).toMatchObject({ quantity: "1", unitPriceHt: "300", totalHt: "300", vatRate: "10" });
     expect(correctedFinancialBlocker(draft, { ttc: "330.00" }, { ht: "300.00", ttc: "330.00" })).toBeNull();
-    expect(correctedFinancialBlocker(draft, { ttc: "331.00" })).toContain("differs");
+    expect(correctedFinancialBlocker(draft, { ttc: "331.00" })).toContain("don't match the original total");
   });
 });
