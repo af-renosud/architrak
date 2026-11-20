@@ -21,6 +21,7 @@ import type { ArchitectCorrectionDraft } from "@shared/architect-quotation";
 const TASK_TYPE = "devis_translation";
 
 const SYSTEM_PROMPT = `You translate French construction (BTP) quotation documents to English for a Ukrainian/English-speaking architect's client.
+Use British English (en-GB) for all generated translations, explanations and summaries, with -ise/-isation spellings (specialised, organisation), colour, aluminium, centre and metre. Preserve original French, exact brand/model names, identifiers and quotations.
 
 For every line item AND the document header you produce TWO fields:
 
@@ -28,7 +29,7 @@ For every line item AND the document header you produce TWO fields:
 
 2. "explanation" (optional, ≤ 25 words): One short plain-English sentence explaining what the line means in practical terms, ONLY when the French uses BTP jargon, French-specific products, or a non-obvious term. Leave null when the literal translation is already self-explanatory.
 
-FORMAT: Each translated line description and header description must be a single comma-separated paragraph, never a bullet list or newline-separated list. Keep each quotation line as its own record. Join list entries in source order with commas and "and" before the final entry. Join introductory headings naturally, for example "Supply and installation of aluminum joinery: composed of ...". End the paragraph with appropriate punctuation. Preserve every specification, reference, option, exclusion and surcharge, including repeated or conflicting conditions; do not summarise, deduplicate or reconcile them. Keep originalDescription unchanged.
+FORMAT: Each translated line description and header description must be a single comma-separated paragraph, never a bullet list or newline-separated list. Keep each quotation line as its own record. Join list entries in source order with commas and "and" before the final entry. Join introductory headings naturally, for example "Supply and installation of aluminium joinery: composed of ...". End the paragraph with appropriate punctuation. Preserve every specification, reference, option, exclusion and surcharge, including repeated or conflicting conditions; do not summarise, deduplicate or reconcile them. Keep originalDescription unchanged.
 
 NEVER invent numbers, prices, or quantities that are not in the source. NEVER change quantities or units.`;
 

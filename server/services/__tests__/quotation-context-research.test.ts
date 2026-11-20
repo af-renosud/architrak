@@ -16,6 +16,11 @@ describe("Gemini grounded context", () => {
     vi.stubGlobal("fetch", fetcher);
     const result = await researchQuotationContext("Produit", "Product");
     expect(JSON.parse(fetcher.mock.calls[0][1].body).tools).toEqual([{ google_search: {} }]);
+    const prompt = JSON.parse(fetcher.mock.calls[0][1].body).systemInstruction.parts[0].text;
+    expect(prompt).toContain("British English (en-GB)");
+    expect(prompt).toContain("-ise/-isation");
+    expect(prompt).toContain("specialised");
+    expect(prompt).toContain("Preserve exact manufacturer names");
     expect(result.sources).toEqual([{ title: "Manufacturer", uri: "https://example.com" }]);
     expect(result.warning).toBeNull();
   });
