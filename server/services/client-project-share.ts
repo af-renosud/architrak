@@ -125,7 +125,7 @@ export async function publishReviewedQuotation(projectId: number, tokenId: numbe
  * quotation off the client's page.
  */
 export function isVisibleOnShareLink(devis: Devis): boolean {
-  if (devis.signOffStage === "void" || devis.status === "void") return false;
+  if (devis.signOffStage === "void" || ["void", "cancelled", "superseded"].includes(devis.status)) return false;
   if (devis.accountingState === "provisional") return false;
   if (devis.accountingState === "superseded") return false;
   return true;

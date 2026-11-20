@@ -3,6 +3,7 @@ import "./quotation-list-layout.css";
 import type { QuotationReplacementHistory as ReplacementHistoryEntry } from "@shared/quotation-replacement";
 import { ReplaceQuotationDialog } from "./ReplaceQuotationDialog";
 import { ClientBudgetAuditDetail, ClientBudgetControls } from "./ClientBudgetControls";
+import { quotationCommitmentStatus, type QuotationCommitmentEvidence } from "@shared/quotation-commitment";
 import { QuotationReplacementHistory } from "./QuotationReplacementHistory";
 import { QuotationVersionGroup } from "./QuotationVersionGroup";
 import { filterQuotationVersionGroups, groupQuotationVersions, isReplacedQuotation } from "./quotation-version-groups";
@@ -1210,7 +1211,12 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                 {replacementBlock && <p id={`replacement-block-${d.id}`} className="mt-1 text-[10px] text-muted-foreground">{replacementBlock}</p>}
               </div>
               {nextActionEligible(d, isArchived) && <QuotationNextActionFlag devisId={d.id} projectId={projectId} controller={nextActions} onExpand={onExpandForAction} />}
-              <ClientBudgetControls projectId={projectId} devisId={d.id} isArchived={isArchived} />
+              <div className="flex w-full min-w-0 flex-col gap-3 md:flex-row md:items-start" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
+                <ProjectSharePublishControl projectId={projectId} devisId={d.id} quotation={d} isArchived={isArchived} />
+                <div className="min-w-0 border-l-2 border-[#c1a27b]/30 pl-3">
+                  <ClientBudgetControls projectId={projectId} devisId={d.id} isArchived={isArchived} />
+                </div>
+              </div>
               {/* Compact toolbar: status + mode + advisory + actions, with hairline dividers */}
               <div className="flex items-center gap-2 min-[900px]:gap-2.5 flex-wrap min-w-0 sm:ml-auto">
                 {/* Task #374 — the generic PENDING chip is de-emphasised now
@@ -4339,7 +4345,7 @@ export function ClientPortalPanel({
 
 // -----------------------------------------------------------------------------
 // Project-scoped client share link (Task #388) — ONE link per project listing
-// all EXPLICITLY published quotations. Mirrors ClientPortalPanel patterns.
+// explicitly shared unsigned quotations and automatically visible signed ones.
 // -----------------------------------------------------------------------------
 
 type ProjectShareState = {
@@ -4356,6 +4362,8 @@ type ProjectShareState = {
 function useProjectShareState(projectId: string) {
   return useQuery<ProjectShareState>({
     queryKey: projectScopedKey(projectId, "client-share"),
+    // One project-scoped request shared by the collapsed quotation controls.
+    staleTime: 30_000,
   });
 }
 
@@ -4773,17 +4781,22 @@ export function ProjectClientSharePanel({
   );
 }
 
-function ProjectSharePublishControl({
+export function ProjectSharePublishControl({
   projectId,
   devisId,
   isArchived,
+  quotation,
 }: {
   projectId: string;
   devisId: number;
   isArchived: boolean;
+  quotation: QuotationCommitmentEvidence;
 }) {
   const { toast } = useToast();
-  const { data, isLoading } = useProjectShareState(projectId);
+  const { data, isLoading, isError, isFetching, refetch } = useProjectShareState(projectId);
+  const commitment = quotationCommitmentStatus(quotation);
+  const signed = commitment === "signed";
+  const inactive = commitment === "inactive";
 
   const publishMutation = useMutation({
     mutationFn: async () => {
@@ -4803,58 +4816,72 @@ function ProjectSharePublishControl({
     onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
   });
 
-  if (isLoading) return null;
+  if (isLoading) return <Skeleton className="h-16 w-full max-w-sm" aria-label="Loading full quotation visibility" />;
+  if (isError || !data) return (
+    <div className="space-y-1 text-[11px]" role="alert" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
+      <p>Full quotation visibility unavailable.</p>
+      <Button type="button" variant="outline" size="sm" disabled={isFetching} onClick={() => void refetch()}>Retry visibility</Button>
+    </div>
+  );
   const token = data?.token ?? null;
   const isRevoked = !!token?.revokedAt;
-  const isExpired = !!(token?.expiresAt && new Date(token.expiresAt).getTime() <= Date.now());
+  const isExpired = !token?.expiresAt || !(new Date(token.expiresAt).getTime() > Date.now());
   const hasActiveLink = !!token && !isRevoked && !isExpired;
   const published = (data?.publishedDevisIds ?? []).includes(devisId);
+  const busy = publishMutation.isPending || unpublishMutation.isPending;
 
   return (
     <div
-      className="rounded-lg border border-slate-200 bg-white p-2.5 flex items-center justify-between gap-2 flex-wrap"
+      className="min-w-0 rounded-lg border border-[#0B2545]/20 bg-[#0B2545]/[0.03] p-2.5 flex items-center justify-between gap-2 flex-wrap"
       data-testid={`section-project-share-publish-${devisId}`}
+      onClick={event => event.stopPropagation()}
+      onKeyDown={event => event.stopPropagation()}
     >
-      <div className="flex items-center gap-2">
-        <span className="text-[11px] font-semibold text-slate-700">Project client link</span>
+      <div className="min-w-0 space-y-1">
+        <p className="text-[11px] font-semibold text-[#0B2545]">Full quotation · client visibility</p>
         <span
-          className={`px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-wide ${
-            published
+          className={`inline-flex px-2 py-0.5 rounded-full border text-[10px] font-semibold ${
+            !inactive && (signed || (published && hasActiveLink))
               ? "bg-emerald-50 text-emerald-700 border-emerald-200"
               : "bg-slate-100 text-slate-600 border-slate-300"
           }`}
           data-testid={`status-project-share-publish-${devisId}`}
         >
-          {published ? "Published" : "Not published"}
+          {inactive ? "Not shared · inactive quotation" : signed ? "Signed — visible automatically" : published && hasActiveLink ? "Shared with client" : "Not shared"}
         </span>
-        {!hasActiveLink && (
-          <span className="text-[10px] text-slate-500" data-testid={`text-project-share-no-link-${devisId}`}>
-            Issue a project client link first (top of the Devis tab).
-          </span>
+        <p className="max-w-sm text-[10px] text-muted-foreground">
+          {inactive ? "Inactive quotations are excluded from client visibility." : signed ? "No manual sharing required. The signed quotation is listed automatically; its signed PDF is available when retained." : "Full quotation details and documents. Budget-only inclusion is separate."}
+        </p>
+        {!inactive && !hasActiveLink && (
+          <p className="max-w-sm text-[10px] text-amber-800" data-testid={`text-project-share-no-link-${devisId}`}>
+            {signed ? "Client access needs a valid project link." : published ? "Sharing is saved, but client access needs a valid project link." : "A valid project client link is required to share."} Issue or renew it at the top of the Devis tab.
+          </p>
         )}
       </div>
-      {!isArchived && hasActiveLink && (
+      {!signed && !inactive && !isArchived && (
         published ? (
           <Button
+            type="button"
             variant="outline"
             size="sm"
-            className="h-6 text-[9px] font-bold uppercase tracking-widest border-rose-300 text-rose-700 hover:bg-rose-50"
+            className="h-8 text-[11px] border-rose-300 text-rose-700 hover:bg-rose-50"
             onClick={() => unpublishMutation.mutate()}
-            disabled={unpublishMutation.isPending}
+            disabled={busy}
             data-testid={`button-unpublish-devis-${devisId}`}
           >
-            {unpublishMutation.isPending ? "…" : "Unpublish"}
+            {unpublishMutation.isPending ? "Removing…" : "Stop sharing full quotation"}
           </Button>
         ) : (
           <Button
+            type="button"
             variant="outline"
             size="sm"
-            className="h-6 text-[9px] font-bold uppercase tracking-widest"
+            className="h-8 text-[11px] font-semibold border-[#0B2545]/40 text-[#0B2545]"
             onClick={() => publishMutation.mutate()}
-            disabled={publishMutation.isPending}
+            disabled={busy || !hasActiveLink}
             data-testid={`button-publish-devis-${devisId}`}
           >
-            {publishMutation.isPending ? "…" : "Publish to client link"}
+            {publishMutation.isPending ? "Sharing…" : "Share full quotation"}
           </Button>
         )
       )}
@@ -5323,7 +5350,6 @@ function ChecksPanel({
       <TokenPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
       <ClientPortalPanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
       <ClientConversationPanel devisId={devisId} lineItems={lineItems} isArchived={isArchived} />
-      <ProjectSharePublishControl projectId={projectId} devisId={devisId} isArchived={isArchived} />
       <InsurancePanel devisId={devisId} projectId={projectId} isArchived={isArchived} />
       <SigningPanel devisId={devisId} isArchived={isArchived} />
 

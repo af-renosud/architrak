@@ -15,8 +15,12 @@ Unsigned shared amounts remain the architect's saved snapshot until an explicit 
 
 **How to apply:** Version and audit selection changes, retain prior amounts on unconfirmed edits, and explain that the indicative total is not a contract or necessarily the complete project cost. Selections are project-scoped and survive link rotation; link revocation still denies access to the whole portal.
 
-The user requires active signed quotations to appear automatically on the project client link, without a separate selection. This is a requested product rule, not evidence that current publication membership implements it.
+The user requires active signed quotations to appear automatically on the project client link, without a separate selection.
 
 **Why:** Signed work can already contribute to financial summaries while its quotation is absent from the detailed list, which confuses the client and architect.
 
 **How to apply:** Keep unsigned budget disclosure and full-document sharing explicit and distinct. Automatic signed visibility must not expose later unreviewed edits or resurrect void/replaced quotations; show the signed record rather than treating all working content as approved.
+
+Automatic signed inclusion grants a minimal signed-work card and access only to a provenance-checked retained signed PDF. It does not authorise mutable detail, context, discussion or newly generated package endpoints. Missing signed bytes must be stated, never replaced silently by the unsigned original.
+
+**Why:** A signed quotation can have later architect-controlled wording edits; sharing those implicitly would extend consent beyond the signed document.

@@ -3,6 +3,8 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { validateRequest } from "../middleware/validate";
 import { env } from "../env";
+import { clientSignedPdfKey } from "../services/client-project-signed-quotation";
+import { getDocumentStream } from "../storage/object-storage";
 import {
   issueProjectShareToken,
   buildProjectShareUrl,
@@ -32,6 +34,24 @@ const issueSchema = z.object({
 const devisRefSchema = z.object({
   devisId: z.number().int().positive(),
 }).strict();
+
+// Authenticated preview of exactly the retained signed document shown publicly.
+router.get("/api/projects/:projectId/client-share/preview/devis/:devisId/signed.pdf",
+  validateRequest({ params: projectIdParams.extend({ devisId: z.coerce.number().int().positive() }) }),
+  async (req, res) => {
+    const devis = await storage.getDevis(Number(req.params.devisId));
+    if (!devis || devis.projectId !== Number(req.params.projectId)) return res.status(404).json({ message: "Quotation not found" });
+    const key = clientSignedPdfKey(devis);
+    if (!key) return res.status(404).json({ message: "Signed document unavailable" });
+    try {
+      const doc = await getDocumentStream(key);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="signed-quotation-${devis.id}.pdf"`);
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      doc.stream.pipe(res);
+    } catch { res.status(404).json({ message: "Signed document temporarily unavailable" }); }
+  });
 
 // NOTE: mounted at the application root in routes/index.ts; every route is
 // under `/api/...` so the `/api` perimeter auth gate in server/index.ts

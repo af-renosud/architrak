@@ -28,12 +28,15 @@ import type { ClientProjectShareToken, Devis } from "@shared/schema";
 import { quotationCommitmentStatus } from "../../shared/quotation-commitment";
 import { getPublicClientBudget } from "../services/client-budget";
 import type { PublicClientBudget } from "@shared/client-budget";
+import { clientSignedPdfKey, isAutomaticSignedQuotation } from "../services/client-project-signed-quotation";
 
 /**
  * Public project-scoped client share link (Task #388) — /p/client/project/:token.
  *
- * One link per project listing all quotations the architect has EXPLICITLY
- * published. Constitutional rule (ARCHITECTURE.md §4.8 wire-contract
+ * One link per project listing explicitly published unsigned quotations and
+ * active signed records automatically. Automatic inclusion grants only the
+ * provenance-checked signed document, never the mutable working package.
+ * Constitutional rule (ARCHITECTURE.md §4.8 wire-contract
  * invariant): this is an unauthenticated surface, so the payload is a
  * strict whitelist — NEVER banking fields (IBAN/BIC), aiExtractedData,
  * validationWarnings, storage keys, or unconfirmed analysis content.
@@ -66,6 +69,8 @@ export interface ProjectSharePayload {
     status: "signed" | "rejected" | "awaiting_signature" | "in_review";
     commitmentEligible: boolean;
     commitmentStatus: "signed" | "unsigned" | "inactive";
+    signedRecordOnly?: boolean;
+    signedDocumentAvailable?: boolean;
   }>;
   /**
    * Task #415 — project-level financial overview, the SAME headline figures
@@ -101,7 +106,9 @@ export async function buildProjectSharePayload(
   token: Pick<ClientProjectShareToken, "id" | "projectId" | "clientName" | "clientEmail">,
 ): Promise<ProjectSharePayload> {
   const project = await storage.getProject(token.projectId);
-  const devisIds = await storage.listProjectShareDevisIds(token.id);
+  const publishedIds = await storage.listProjectShareDevisIds(token.id);
+  const signed = (await storage.getDevisByProject(token.projectId)).filter(isAutomaticSignedQuotation);
+  const devisIds = Array.from(new Set([...publishedIds, ...signed.map(d => d.id)]));
   const lots = project ? await storage.getLotsByProject(project.id) : [];
   const lotById = new Map(lots.map((l) => [l.id, l]));
 
@@ -112,6 +119,19 @@ export async function buildProjectSharePayload(
     // provisional / superseded devis (or cross-project rows, which should
     // be impossible) never render on the public page.
     if (!devis || devis.projectId !== token.projectId || !isVisibleOnShareLink(devis)) continue;
+    if (isAutomaticSignedQuotation(devis)) {
+      // Do not expose mutable descriptions, translation/context or analysis.
+      // The retained signed document is the authoritative client-facing record.
+      quotations.push({
+        id: devis.id, ref: devis.devisNumber || devis.devisCode, trade: null,
+        description: null, descriptionEn: null, amountHt: devis.amountHt ?? null,
+        amountTtc: devis.amountTtc ?? null, translationAvailable: false,
+        analysisAvailable: false, openQuestionCount: 0, status: "signed",
+        commitmentEligible: true, commitmentStatus: "signed", signedRecordOnly: true,
+        signedDocumentAvailable: !!clientSignedPdfKey(devis),
+      });
+      continue;
+    }
     const [translation, analysis, checks] = await Promise.all([
       storage.getDevisTranslation(devis.id),
       storage.getDevisCostAnalysis(devis.id),
@@ -287,7 +307,33 @@ function devisIdFromReq(req: Request): number {
   return Number(req.params.devisId);
 }
 
-/** Resolve a member devis for this token, or null when unreachable. */
+/** Automatic membership grants the retained signed PDF, not later working edits. */
+router.get(
+  "/p/client/project/:token/devis/:devisId/signed.pdf",
+  shareReadIpLimiter, shareReadTokenLimiter,
+  validateRequest({ params: detailParams }),
+  async (req, res) => {
+    const lookup = await resolveProjectShareToken(tokenFromReq(req));
+    if (!lookup.ok) return res.status(lookup.reason === "expired" ? 410 : 404).json({ message: "Invalid or expired link" });
+    const devis = await storage.getDevis(devisIdFromReq(req));
+    if (!devis || devis.projectId !== lookup.token.projectId) return res.status(404).json({ message: "Quotation not found" });
+    const key = clientSignedPdfKey(devis);
+    if (!key) return res.status(404).json({ message: "Signed document unavailable" });
+    try {
+      const doc = await getDocumentStream(key);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="signed-quotation-${devis.id}.pdf"`);
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      doc.stream.pipe(res);
+    } catch {
+      res.status(404).json({ message: "Signed document temporarily unavailable. Please contact your architect." });
+    }
+  },
+);
+
+/** Resolve explicit working-package membership; automatic signed inclusion does
+ * not grant access to the mutable detail, discussion or generated PDF endpoints. */
 async function resolveMemberDevis(
   token: ClientProjectShareToken,
   devisId: number,
@@ -495,6 +541,9 @@ export function renderProjectShareShell(
   const detailUrlSuffix = isPreview
     ? `/client-checks/portal-preview/shell?projectId=${opts.projectId}`
     : "";
+  const signedUrlBase = isPreview
+    ? `/api/projects/${opts.projectId}/client-share/preview/devis`
+    : `/p/client/project/${encodeURIComponent(opts.token)}/devis`;
   const previewBanner = isPreview
     ? `<div class="preview-banner" data-testid="banner-project-share-preview">Architect preview — this is what the client will see. Nothing is sent or recorded.</div>`
     : "";
@@ -516,7 +565,16 @@ export function renderProjectShareShell(
   a.card:hover { border-color: #94a3b8; box-shadow: 0 2px 8px rgba(15,23,42,0.08); }
   .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
   .open-hint { font-size: 12px; color: #2563eb; font-weight: 600; margin-top: 10px; }
-  .card .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+  .card .top { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 16px; align-items: start; }
+  .card .top > :first-child { min-width: 0; overflow-wrap: anywhere; }
+  .card .top > :last-child:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+  .budget-money { white-space: nowrap; }
+  .card .top > :first-child .amount { white-space: normal; overflow-wrap: anywhere; }
+  @media (max-width: 480px) {
+    .card .top { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    .card .top > :last-child:not(:first-child) { justify-self: end; }
+    .budget-money, .card .budget-money .amount { font-size: 12px; }
+  }
   .card h3 { margin: 0; font-size: 15px; font-weight: 600; }
   .trade { font-size: 12px; color: #64748b; margin: 2px 0 0; }
   .desc { font-size: 13px; color: #334155; margin: 8px 0 0; line-height: 1.4; }
@@ -559,6 +617,7 @@ ${previewBanner}<header>
 const DATA_URL = ${JSON.stringify(dataUrl)};
 const DETAIL_URL_BASE = ${JSON.stringify(detailUrlBase)};
 const DETAIL_URL_SUFFIX = ${JSON.stringify(detailUrlSuffix)};
+const SIGNED_URL_BASE = ${JSON.stringify(signedUrlBase)};
 const STATUS_LABELS = {
   signed: "Signed",
   rejected: "Declined",
@@ -617,8 +676,10 @@ function renderQuotation(q) {
   if (q.openQuestionCount > 0) badges.push('<span class="badge b-questions" data-testid="badge-questions-' + escapeHtml(q.ref) + '">' + q.openQuestionCount + ' open question' + (q.openQuestionCount > 1 ? 's' : '') + '</span>');
   const amount = q.amountHt ? formatAmount(q.amountHt) : null;
   const amountTtc = q.amountTtc != null ? formatAmount(q.amountTtc, "TTC") : null;
-  const href = DETAIL_URL_BASE + '/' + encodeURIComponent(q.id) + DETAIL_URL_SUFFIX;
-  return '<a class="card" href="' + escapeHtml(href) + '" data-testid="card-quotation-' + escapeHtml(q.ref) + '">'
+  const href = q.signedRecordOnly
+    ? (q.signedDocumentAvailable ? SIGNED_URL_BASE + '/' + encodeURIComponent(q.id) + '/signed.pdf' : null)
+    : DETAIL_URL_BASE + '/' + encodeURIComponent(q.id) + DETAIL_URL_SUFFIX;
+  return '<' + (href ? 'a' : 'div') + ' class="card"' + (href ? ' href="' + escapeHtml(href) + '"' : '') + ' data-testid="card-quotation-' + escapeHtml(q.ref) + '">'
     + '<div class="top"><div>'
     + '<h3>Devis ' + escapeHtml(q.ref) + '</h3>'
     + '<p class="amount" data-testid="text-quotation-ttc-' + escapeHtml(q.id) + '"><strong>Total payable TTC (including VAT): ' + (amountTtc ? escapeHtml(amountTtc) : 'not available') + '</strong></p>'
@@ -629,8 +690,10 @@ function renderQuotation(q) {
     + (q.description ? '<p class="desc">' + escapeHtml(q.description) + '</p>' : '')
     + (q.descriptionEn ? '<p class="desc desc-en">' + escapeHtml(q.descriptionEn) + '</p>' : '')
     + '<div class="badges">' + badges.join('') + '</div>'
-    + '<div class="open-hint">View details, translation &amp; questions &rarr;</div>'
-    + '</a>';
+    + '<div class="open-hint">' + (q.signedRecordOnly
+      ? (q.signedDocumentAvailable ? 'View signed quotation &rarr;' : 'Signed quotation recorded. Signed document unavailable — please contact your architect.')
+      : 'View details, translation &amp; questions &rarr;') + '</div>'
+    + (href ? '</a>' : '</div>');
 }
 
 function renderBudget(b, f) {
@@ -642,7 +705,7 @@ function renderBudget(b, f) {
     + '</div><div class="k-sub">' + escapeHtml(formatAmount(ht, "HT")) + '</div></div>';
   const rows = b.entries.map(e => '<div class="card" data-testid="budget-entry-' + escapeHtml(e.devisId) + '">'
     + '<div class="top"><div><h3>' + escapeHtml(e.title) + '</h3><p class="trade">'
-    + escapeHtml(e.reference) + ' · ' + escapeHtml(e.contractor) + '</p></div><div>'
+    + escapeHtml(e.reference) + ' · ' + escapeHtml(e.contractor) + '</p></div><div class="budget-money">'
     + '<div class="amount">' + escapeHtml(formatAmount(e.amountTtc, "TTC")) + '</div><div class="trade">'
     + escapeHtml(formatAmount(e.amountHt, "HT")) + '</div></div></div><div class="badges"><span class="badge '
     + (e.status === "signed" ? 'b-status-signed">Signed' : 'b-status-awaiting_signature">Under consideration — not signed')

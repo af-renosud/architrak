@@ -115,6 +115,7 @@ export function ClientBudgetControls({
   const { data, isLoading, isError, refetch, isFetching } = useQuery<ClientBudgetState>({
     queryKey: ["/api/projects", String(projectId), "client-budget"],
     queryFn: async () => (await apiRequest("GET", `/api/projects/${projectId}/client-budget`)).json(),
+    staleTime: 30_000,
   });
   const candidate = data?.candidates.find((row) => row.devisId === devisId);
   const readOnly = isArchived || !!data?.readOnly;
@@ -130,7 +131,7 @@ export function ClientBudgetControls({
   };
 
   return (
-    <div className={devisId == null ? "rounded-xl border border-[#c1a27b]/30 bg-[#c1a27b]/5 p-3" : "min-w-0"} onClick={(event) => event.stopPropagation()}>
+    <div className={devisId == null ? "rounded-xl border border-[#c1a27b]/30 bg-[#c1a27b]/5 p-3" : "min-w-0"} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
       {devisId == null ? (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
