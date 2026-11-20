@@ -1,4 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+vi.mock("../storage/object-storage", async importOriginal => ({
+  ...await importOriginal<typeof import("../storage/object-storage")>(),
+  getDocumentBuffer: vi.fn(async (key: string) => {
+    if (key !== "approval-integrity-synthetic.pdf") throw new Error("Unexpected source access in integration test");
+    return Buffer.from("synthetic quotation source v1");
+  }),
+}));
 import { eq } from "drizzle-orm";
 import { db, pool } from "../db";
 import { storage } from "../storage";
@@ -7,6 +14,7 @@ import { draftFrom } from "../services/architect-quotation-correction";
 import { commitTranslationApproval } from "../services/translation-approval-commit";
 import { buildClientPortalPayload } from "../routes/public-client-checks";
 import { confirmDevisAndMirror } from "../services/benchmark-ingest.service";
+import { cleanImport } from "../services/__tests__/fixtures/quotation-workflow";
 
 // Only uniquely named disposable rows. No PDFs, model calls, emails or signing.
 const suffix = `approval-integrity-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -98,6 +106,12 @@ describe("exact-version translation approval", () => {
     expect((await storage.getDevis(devisId))?.status).toBe("draft");
   });
   it("approves an architect-corrected quotation without weakening the background-write guard", async () => {
+    // The previous case deliberately installed invalid legacy extraction.
+    // Give this independent scenario valid source evidence; a correction alone
+    // must not turn unsupported extraction into permission to approve.
+    const sourceRows = await storage.getDevisLineItems(devisId);
+    await db.update(devis).set({ pdfStorageKey: "approval-integrity-synthetic.pdf",
+      aiExtractedData: cleanImport(sourceRows) }).where(eq(devis.id, devisId));
     await db.update(devisTranslations).set({ status: "edited", approvedAt: null })
       .where(eq(devisTranslations.devisId, devisId));
     const q = (await pool.query("SELECT * FROM devis WHERE id=$1", [devisId])).rows[0];

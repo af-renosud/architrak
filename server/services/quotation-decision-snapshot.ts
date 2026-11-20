@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { devis, devisLineItems, devisTranslations, type Devis, type DevisLineItem, type DevisTranslation } from "@shared/schema";
 import { draftFrom } from "./architect-quotation-correction";
 import type { ArchitectCorrectionDraft } from "@shared/architect-quotation";
+import { quotationWorkingVersion, stableQuotationDigest } from "./quotation-working-version";
 
 export interface QuotationDecisionSnapshot {
   quotation: Devis;
@@ -35,4 +36,8 @@ export async function readQuotationDecisionSnapshot(tx: Reader, id: number): Pro
 }
 export function loadQuotationDecisionSnapshot(id: number): Promise<QuotationDecisionSnapshot | null> {
   return db.transaction(tx => readQuotationDecisionSnapshot(tx, id), { isolationLevel: "repeatable read", accessMode: "read only" });
+}
+export function quotationDecisionVersion(s: QuotationDecisionSnapshot) {
+  return stableQuotationDigest({ working: quotationWorkingVersion(s.quotation, s.lines, s.translation),
+    baseline: s.baseline, draft: s.draft, hasCorrection: s.hasCorrection, archived: s.archived });
 }

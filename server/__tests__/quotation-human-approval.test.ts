@@ -1,58 +1,52 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ get: vi.fn(), lines: vi.fn(), translation: vi.fn(), corrected: vi.fn(), financial: vi.fn(), query: vi.fn() }));
-vi.mock("../storage", () => ({ storage: { getDevis: mocks.get,getDevisLineItems: mocks.lines,getDevisTranslation: mocks.translation } }));
-vi.mock("../db", () => ({ pool: { query: mocks.query } }));
-vi.mock("../services/architect-quotation-correction", () => ({ hasQuotationSourceBaseline: mocks.corrected, hasArchitectCorrection: vi.fn(async () => false),architectFinancialBoundary: mocks.financial }));
+const mocks = vi.hoisted(() => ({ snapshot: vi.fn(), pdf: vi.fn() }));
+vi.mock("../services/quotation-decision-snapshot", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/quotation-decision-snapshot")>(), loadQuotationDecisionSnapshot: mocks.snapshot,
+}));
+vi.mock("../storage/object-storage", () => ({ getDocumentBuffer: mocks.pdf }));
 import { quotationApprovalBlocker } from "../services/quotation-approval-guard";
-import { translationCoverageBlocker } from "../services/quotation-translation-coverage";
-it("allows explicit review without a correction but not stage advancement before approval", async () => {
-  mocks.corrected.mockResolvedValue(true); // independently confirmed source, no correction record
-  mocks.translation.mockResolvedValue({ status: "draft", headerTranslated: {} });
-  expect(await quotationApprovalBlocker(42, { reviewing: true })).toBeNull();
-  expect(await quotationApprovalBlocker(42)).toContain("no correction or repeat entry");
-  mocks.translation.mockResolvedValue({ status: "finalised", approvedAt: new Date(), headerTranslated: { humanReviewed: true } });
-  expect(await quotationApprovalBlocker(42)).toBeNull();
-});
+import { decisionFixture, confirmFixture } from "../services/__tests__/fixtures/quotation-decision";
+import { sourceBytes } from "../services/__tests__/fixtures/quotation-workflow";
+let snapshot = decisionFixture();
 beforeEach(() => {
-  vi.clearAllMocks(); mocks.corrected.mockResolvedValue(false); mocks.financial.mockResolvedValue(null);
-  mocks.get.mockResolvedValue({ aiExtractedData: { quotationVerification: { verified: false }, illustratedRecovery: { status: "unverified" } } });
+  vi.clearAllMocks(); snapshot = decisionFixture();
+  snapshot.quotation.aiExtractedData = { quotationVerification: { verified: false }, illustratedRecovery: { status: "unverified" } };
+  mocks.snapshot.mockImplementation(async () => snapshot); mocks.pdf.mockResolvedValue(sourceBytes);
 });
 describe("human approval authority, separate from automatic quality diagnostics", () => {
-  it("allows legacy explicitly human-reviewed content despite stale OCR/model coverage, without machine queries", async () => {
-    mocks.translation.mockResolvedValue({ status: "finalised",headerTranslated: { humanReviewed: true } });
-    expect(await quotationApprovalBlocker(42)).toBeNull();
-    expect(await translationCoverageBlocker(42)).toBeNull();
-    expect(mocks.lines).not.toHaveBeenCalled(); expect(mocks.query).not.toHaveBeenCalled();
+  it("allows explicit review without correction but requires approval before stage advancement", async () => {
+    confirmFixture(snapshot);
+    expect(await quotationApprovalBlocker(901, { reviewing: true })).toBeNull();
+    expect(await quotationApprovalBlocker(901)).toContain("no correction or repeat entry");
+    snapshot.translation!.status = "finalised"; snapshot.translation!.approvedAt = new Date();
+    snapshot.translation!.headerTranslated = { humanReviewed: true };
+    expect(await quotationApprovalBlocker(901)).toBeNull();
   });
-  it("routes corrected human content only through its exact financial/source boundary, never historical coverage", async () => {
-    mocks.corrected.mockResolvedValue(true);
-    expect(await quotationApprovalBlocker(42, { reviewing: true })).toBeNull();
-    expect(mocks.financial).toHaveBeenCalledWith(42);
-    mocks.financial.mockResolvedValue("Working TTC differs from locked source TTC.");
-    expect(await quotationApprovalBlocker(42)).toContain("TTC differs");
-    expect(mocks.lines).not.toHaveBeenCalled();
+  it("allows a legacy finalised human receipt despite stale OCR coverage", async () => {
+    snapshot.translation!.status = "finalised"; snapshot.translation!.headerTranslated = { humanReviewed: true };
+    expect(await quotationApprovalBlocker(901)).toBeNull();
   });
-  it("retains strict automatic coverage policy when no human correction or approval exists", async () => {
-    mocks.translation.mockResolvedValue({ status: "draft",headerTranslated: {} }); mocks.lines.mockResolvedValue([]);
-    expect(await quotationApprovalBlocker(42)).toContain("unverified");
+  it("checks corrected figures against the source, not historical machine coverage", async () => {
+    confirmFixture(snapshot); snapshot.hasCorrection = true;
+    expect(await quotationApprovalBlocker(901, { reviewing: true })).toBeNull();
+    snapshot.baseline!.ttc = "121.00";
+    expect(await quotationApprovalBlocker(901)).toContain("TTC differs");
   });
-  it("does not reuse a former human approval receipt after a new content edit", async () => {
-    mocks.translation.mockResolvedValue({ status: "edited",headerTranslated: { humanReviewed: true } });
-    mocks.lines.mockResolvedValue([]);
-    expect(await quotationApprovalBlocker(42)).toContain("unverified");
+  it("retains strict automatic coverage for an unreviewed import", async () => {
+    expect(await quotationApprovalBlocker(901)).toContain("unverified");
   });
-  it("does not let translation approval waive newly recorded unsupported charges", async () => {
-    mocks.get.mockResolvedValue({ aiExtractedData: { pricedItemVerification: {
-      parser: "priced-source-v1", sourceDigest: "source", rowsDigest: "rows",
-      issues: [{ line: 14, page: 5, reason: "Unsupported charge" }],
-    } } });
-    mocks.lines.mockResolvedValue([]);
-    mocks.translation.mockResolvedValue({ status: "finalised", headerTranslated: { humanReviewed: true } });
-    expect(await quotationApprovalBlocker(42)).toContain("item 14 (PDF page 5)");
+  it("does not reuse human approval after a content edit", async () => {
+    snapshot.translation!.status = "edited"; snapshot.translation!.headerTranslated = { humanReviewed: true };
+    expect(await quotationApprovalBlocker(901)).toContain("unverified");
   });
-  it("asks for scoped review of a historical extraction with no receipt", async () => {
-    mocks.get.mockResolvedValue({ aiExtractedData: { documentType: "quotation" } });
-    mocks.translation.mockResolvedValue(null);
-    expect(await quotationApprovalBlocker(42)).toContain("no source-verification receipt");
+  it("does not let legacy approval waive unsupported priced charges", async () => {
+    snapshot = decisionFixture();
+    (snapshot.quotation.aiExtractedData as any).pricedItemVerification.issues.push({ line: 1, page: 1, reason: "unsupported" });
+    snapshot.translation!.status = "finalised"; snapshot.translation!.headerTranslated = { humanReviewed: true };
+    expect(await quotationApprovalBlocker(901)).toContain("Source review required");
+  });
+  it("requests scoped review of historical extraction without a receipt", async () => {
+    snapshot.quotation.aiExtractedData = { documentType: "quotation" };
+    expect(await quotationApprovalBlocker(901)).toContain("no source-verification receipt");
   });
 });

@@ -21,6 +21,8 @@ import { quotationApprovalBlocker } from "../services/quotation-approval-guard";
 import { translationCoverageBlocker } from "../services/quotation-translation-coverage";
 import { commitTranslationApproval } from "../services/translation-approval-commit";
 import { quotationReviewReadiness } from "../services/quotation-review-readiness";
+import { loadQuotationDecisionSnapshot } from "../services/quotation-decision-snapshot";
+import { evaluateQuotationDecision } from "../services/quotation-decision";
 import { quotationWorkingVersion } from "../services/quotation-working-version";
 import { duplicateCorrection, getDuplicateCorrectionHistory, CorrectionError } from "../services/duplicate-extraction";
 import { extractionRowCorrection } from "../services/extraction-row-correction";
@@ -646,21 +648,15 @@ router.post(
   async (req, res, next) => {
     try {
     const devisId = Number(req.params.id);
-    const [quotation, lines, existing] = await Promise.all([
-      storage.getDevis(devisId), storage.getDevisLineItems(devisId), storage.getDevisTranslation(devisId),
-    ]);
-    if (await hasQuotationSourceBaseline(devisId) && (req.body?.confirmedReview !== true || typeof req.body?.expectedVersion !== "string"))
+    const snapshot = await loadQuotationDecisionSnapshot(devisId);
+    if (!snapshot) return res.status(404).json({ message: "Quotation not found." });
+    const { quotation, lines, translation: existing } = snapshot;
+    if (req.body?.confirmedReview !== true || typeof req.body?.expectedVersion !== "string")
       return res.status(409).json({ message: "Confirm your review of the latest saved quotation before approving.", code: "EXPLICIT_REVIEW_REQUIRED" });
-    if (req.body?.expectedVersion !== undefined && (
-      typeof req.body.expectedVersion !== "string"
-      || req.body.expectedVersion !== quotationWorkingVersion(quotation, lines, existing)
-    )) return res.status(409).json({ message: "The quotation changed after your review. Refresh the approval checks; your edits are preserved.", code: "REVIEW_VERSION_CHANGED" });
-    // This endpoint is explicit human approval, not automatic extraction
-    // acceptance. OCR/semantic observations must not veto the architect.
-    const financialBlocker = await architectFinancialBoundary(devisId);
-    if (financialBlocker) return res.status(409).json({ message: financialBlocker, code: "SOURCE_TTC_RECONCILIATION_REQUIRED" });
-    const sourceBlocker = await quotationApprovalBlocker(devisId, { reviewing: true });
-    if (sourceBlocker) return res.status(409).json({ message: sourceBlocker, code: "quotation_source_review_required" });
+    const decision = await evaluateQuotationDecision(snapshot, "approve");
+    if (req.body.expectedVersion !== decision.version)
+      return res.status(409).json({ message: "The quotation changed after your review. Refresh the approval checks; your edits are preserved.", code: "REVIEW_VERSION_CHANGED" });
+    if (!decision.allowed) return res.status(409).json({ message: decision.issues[0].message, code: decision.issues[0].code, decision });
     if (!existing) return res.status(404).json({ message: "No translation to finalise" });
     if (existing.status !== "draft" && existing.status !== "edited") {
       return res.status(409).json({ message: `Cannot finalise translation in status ${existing.status}` });
@@ -668,9 +664,9 @@ router.post(
     const userId = req.session?.userId;
     if (!userId) return res.status(401).json({ message: "Authentication required" });
     const approver = await storage.getUser(Number(userId));
-    const updated = await commitTranslationApproval(devisId, { quotation, lines, translation: existing },
+    const updated = await commitTranslationApproval(devisId, { quotation, lines, translation: existing, decisionVersion: decision.version },
       Number(userId), approver?.email ?? null);
-    if (!updated) return res.status(409).json({ message: "Quotation or translation changed during verification. Verify the current version before finalising." });
+    if (!updated) return res.status(409).json({ code: "REVIEW_VERSION_CHANGED", message: "Quotation or source verification changed during approval. Your draft is preserved; refresh the review checklist." });
     res.json(updated);
     } catch (error) { next(error); }
   },

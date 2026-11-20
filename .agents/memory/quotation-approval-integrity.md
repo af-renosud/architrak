@@ -21,6 +21,12 @@ Translation approval belongs to exact content. Inline changes must invalidate ap
 
 **How to apply:** Clear approval and PDF cache metadata atomically with content changes, bump the PDF version, and reject stale finalisation.
 
+Review versions must bind independent source evidence as well as visible content.
+
+**Why:** Confirming a source baseline can change the applicable approval rules without changing the quotation's descriptions or financial header. A content-only fingerprint misses that change.
+
+**How to apply:** Bind source confirmation and correction metadata into the reviewed decision version, and compare it again under the approval locks. Keep fixtures for source evidence independent from tests that deliberately installed invalid extraction.
+
 Line review colours and contractor questions have independent lifecycles. Reflagging or editing a line must never replace authored question wording, and unflagging alone must never withdraw it. Withdrawal is explicit and reversible; sent wording is immutable and amendments belong in the conversation.
 
 **Why:** Operators could not readily reopen saved questions, and colour/progress/note updates could silently overwrite or hide them. A saved draft is valuable authored content even when no conversation messages exist.

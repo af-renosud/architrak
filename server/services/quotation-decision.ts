@@ -2,10 +2,9 @@ import { createHash } from "node:crypto";
 import { quotationIssue, type QuotationAction, type QuotationDecision, type QuotationIssue } from "@shared/quotation-decision";
 import { quotationFinancialIssues } from "@shared/quotation-financial-decision";
 import { getDocumentBuffer } from "../storage/object-storage";
-import { quotationWorkingVersion } from "./quotation-working-version";
-import { pricedEvidenceBlocker, quotationWorkingCoverageBlocker } from "./quotation-approval-guard";
+import { pricedEvidenceIssues, workingCoverageIssues } from "./quotation-source-evidence";
 import type { ParsedDocument } from "../gmail/document-parser";
-import type { QuotationDecisionSnapshot } from "./quotation-decision-snapshot";
+import { quotationDecisionVersion, type QuotationDecisionSnapshot } from "./quotation-decision-snapshot";
 
 /** Authoritative source/review rules, independent of transport and UI.
  * Delivery-specific insurance, recipients and question authorisations remain
@@ -18,7 +17,7 @@ export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, ac
   if (s.archived) add("PROJECT_ARCHIVED", "Archived projects are read-only.", "lifecycle");
   if (d.accountingState === "superseded") add("QUOTATION_REPLACED", "This quotation has been replaced. Open its replacement.", "lifecycle");
   if (["void", "cancelled"].includes(d.status) || d.signOffStage === "void") add("QUOTATION_VOID", "This quotation has been cancelled.", "lifecycle");
-  const version = quotationWorkingVersion(d, s.lines, t);
+  const version = quotationDecisionVersion(s);
   const result = () => ({ action, version, allowed: !issues.some(i => i.severity === "blocker"), issues });
   if (action === "save_content") return result(); // Financial incompleteness cannot veto wording.
   const reviewing = action === "approve";
@@ -42,8 +41,7 @@ export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, ac
   } else {
     const parsed = d.aiExtractedData as ParsedDocument | null;
     if (parsed?.pricedItemVerification) {
-      const blocker = pricedEvidenceBlocker(parsed, s.lines);
-      if (blocker) add("PRICED_SOURCE_UNVERIFIED", blocker, "source");
+      issues.push(...pricedEvidenceIssues(parsed, s.lines));
       if (parsed.nativeTableRecovery && (Math.round(Number(d.amountHt) * 100) !== Math.round(parsed.nativeTableRecovery.amountHt * 100)
         || Math.round(Number(d.amountTtc) * 100) !== Math.round(parsed.nativeTableRecovery.amountTtc * 100)))
         add("HEADER_TOTAL_MISMATCH", "Working header totals differ from the independently read original totals. Use Edit working quotation to reconcile the source.", "financial");
@@ -57,8 +55,8 @@ export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, ac
         && !parsed.pricedItemVerification && !parsed.illustratedRecovery && !parsed.quotationVerification)
         add("SOURCE_CONFIRMATION_REQUIRED", "This quotation has no source-verification receipt. Review the original PDF in Edit working quotation and confirm its source total before approval.", "source");
       else if (parsed?.illustratedRecovery || parsed?.quotationVerification) {
-        const blocker = quotationWorkingCoverageBlocker(parsed, s.lines);
-        if (blocker) add("COVERAGE_INCOMPLETE", blocker, "source");
+        // Priced evidence was already evaluated above.
+        issues.push(...workingCoverageIssues({ ...parsed, pricedItemVerification: undefined }, s.lines));
       }
     }
   }

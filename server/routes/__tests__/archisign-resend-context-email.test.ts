@@ -1,4 +1,13 @@
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
+vi.mock("../../services/quotation-decision-snapshot", async importOriginal => ({
+  ...await importOriginal<typeof import("../../services/quotation-decision-snapshot")>(),
+  loadQuotationDecisionSnapshot: async (id: number) => {
+    const { storage } = await import("../../storage");
+    const quotation = await storage.getDevis(id);
+    return quotation ? { quotation, lines: [], translation: await storage.getDevisTranslation(id),
+      archived: false, baseline: null, hasCorrection: false, draft: { lines: [], discountHt: "0.00" } } : null;
+  },
+}));
 vi.mock("../../services/architect-quotation-correction", () => ({
   hasQuotationSourceBaseline: vi.fn(async () => false), hasArchitectCorrection: vi.fn(async () => false), architectFinancialBoundary: vi.fn(async () => null),
 }));
