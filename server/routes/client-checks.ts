@@ -2,6 +2,7 @@ import { Router } from "express";
 import { CLIENT_LINK_MESSAGE_MAX_LENGTH } from "../../shared/client-link-limits";
 import { z } from "zod";
 import { storage } from "../storage";
+import { streamClientContextImage } from "../services/client-context-image";
 import { validateRequest } from "../middleware/validate";
 import {
   issueClientCheckTokenEmail,
@@ -20,6 +21,9 @@ import {
 } from "../communications/email-sender";
 
 const router = Router();
+router.get("/api/devis/:devisId/client-checks/portal-preview/context-assets/:assetId", async (req, res) => {
+  await streamClientContextImage(Number(req.params.devisId), String(req.params.assetId), res);
+});
 
 const devisIdParams = z.object({ devisId: z.coerce.number().int().positive() });
 const checkIdParams = z.object({ checkId: z.coerce.number().int().positive() });

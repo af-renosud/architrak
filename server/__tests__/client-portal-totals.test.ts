@@ -9,10 +9,12 @@ describe("client quotation totals", () => {
       const start = html.indexOf("function renderDevisInfo(data)");
       const end = html.indexOf("function renderAnalysis(data)", start);
       const result = runInNewContext(html.slice(start,end) + '\nrenderDevisInfo(data)', {
-        data: { devis: {ref:"260309", amountHt:"32405.00", amountTtc:"34187.28"},lineItems:[] },
+        data: { devis: {ref:"DM.1.DIVERS", documentRef:"DV260940", amountHt:"32405.00", amountTtc:"34187.28"},lineItems:[] },
         escapeHtml: (s: unknown) => String(s ?? ""),
       });
       expect(result).toContain("34187.28");
+      expect(result).toContain("Devis DM.1.DIVERS");
+      expect(result).toContain("N° DV260940");
       expect(result).toContain("32405.00");
       expect(result.indexOf("Total payable TTC")).toBeLessThan(result.indexOf("Amount HT"));
     });

@@ -31,11 +31,12 @@ it("serves a signed PDF without explicit membership, never the original or mutab
   expect(response.status).toBe(200); expect(await response.text()).toBe("%PDF-signed");
   expect(response.headers.get("cache-control")).toBe("private, no-store");
   expect(mocks.stream).toHaveBeenCalledWith("signed-only");
-  for(const suffix of ["/data","/pdf","/package.pdf"]) expect((await fetch(base+suffix)).status).toBe(404);
+  for(const suffix of ["/data","/pdf","/package.pdf","/context-assets/7"]) expect((await fetch(base+suffix)).status).toBe(404);
 });
 it.each(["revoked","expired"])("rejects %s tokens before loading documents",async reason=>{
   mocks.resolve.mockResolvedValue({ok:false,reason});
   expect((await fetch(`${base}/signed.pdf`)).status).toBe(reason==="expired"?410:404);
+  expect((await fetch(`${base}/context-assets/7`)).status).toBe(reason==="expired"?410:404);
   expect(mocks.stream).not.toHaveBeenCalled();
 });
 it.each([{projectId:2},{accountingState:"superseded"},{status:"void"},

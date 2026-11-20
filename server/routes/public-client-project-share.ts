@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
+import { streamClientContextImage } from "../services/client-context-image";
 import { validateRequest } from "../middleware/validate";
 import { rateLimit } from "../middleware/rate-limit";
 import {
@@ -53,6 +54,7 @@ export interface ProjectSharePayload {
     id: number;
     /** Public devis reference (devisNumber, falling back to devisCode). */
     ref: string;
+    documentRef?: string | null;
     /** Trade / lot label, English preferred. */
     trade: string | null;
     description: string | null;
@@ -123,7 +125,7 @@ export async function buildProjectSharePayload(
       // Do not expose mutable descriptions, translation/context or analysis.
       // The retained signed document is the authoritative client-facing record.
       quotations.push({
-        id: devis.id, ref: devis.devisNumber || devis.devisCode, trade: null,
+        id: devis.id, ref: devis.devisCode, documentRef: devis.devisNumber, trade: null,
         description: null, descriptionEn: null, amountHt: devis.amountHt ?? null,
         amountTtc: devis.amountTtc ?? null, translationAvailable: false,
         analysisAvailable: false, openQuestionCount: 0, status: "signed",
@@ -146,7 +148,8 @@ export async function buildProjectSharePayload(
       : (devis.lotRefText ?? null);
     quotations.push({
       id: devis.id,
-      ref: devis.devisNumber || devis.devisCode,
+      ref: devis.devisCode,
+      documentRef: devis.devisNumber,
       trade: trade ?? null,
       description: devis.descriptionFr ?? null,
       descriptionEn: devis.descriptionUk ?? null,
@@ -224,6 +227,10 @@ const shareReadTokenLimiter = rateLimit({
   max: 60,
   keyer: tokenOnlyKeyer,
   message: "Too many requests. Please try again in a minute.",
+});
+const shareImageLimiter = rateLimit({
+  name: "project-share-image-tok", windowMs: 60_000, max: 240,
+  keyer: tokenOnlyKeyer, message: "Too many image requests. Please try again in a minute.",
 });
 
 /** HTML shell — greeting + card list of published quotations. */
@@ -411,7 +418,7 @@ router.get(
     const payload = await buildClientPortalPayload(devis, {
       clientName: t.clientName ?? null,
       clientEmail: t.clientEmail,
-    });
+    }, `/p/client/project/${encodeURIComponent(tokenFromReq(_req))}/devis/${devis.id}`);
     if (!payload) {
       res.status(404).json({ message: "Quotation not found" });
       return;
@@ -421,6 +428,12 @@ router.get(
 );
 
 /** Stream the devis PDF inline (membership-gated). */
+router.get("/p/client/project/:token/devis/:devisId/context-assets/:assetId",
+  shareReadIpLimiter, shareImageLimiter,
+  detailEndpoint(async (_t, devis, req, res) => {
+    await streamClientContextImage(devis.id, String(req.params.assetId), res);
+  }));
+
 router.get(
   "/p/client/project/:token/devis/:devisId/pdf",
   shareReadIpLimiter, shareReadTokenLimiter,
@@ -682,6 +695,7 @@ function renderQuotation(q) {
   return '<' + (href ? 'a' : 'div') + ' class="card"' + (href ? ' href="' + escapeHtml(href) + '"' : '') + ' data-testid="card-quotation-' + escapeHtml(q.ref) + '">'
     + '<div class="top"><div>'
     + '<h3>Devis ' + escapeHtml(q.ref) + '</h3>'
+    + (q.documentRef ? '<p class="meta">N° ' + escapeHtml(q.documentRef) + '</p>' : '')
     + '<p class="amount" data-testid="text-quotation-ttc-' + escapeHtml(q.id) + '"><strong>Total payable TTC (including VAT): ' + (amountTtc ? escapeHtml(amountTtc) : 'not available') + '</strong></p>'
     + (q.trade ? '<p class="trade" data-testid="text-trade-' + escapeHtml(q.ref) + '">' + escapeHtml(q.trade) + '</p>' : '')
     + '</div>'

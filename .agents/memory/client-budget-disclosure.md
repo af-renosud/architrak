@@ -3,6 +3,18 @@ name: Client developing-budget disclosure
 description: Architect-selected unsigned budget summaries are separate from detailed quotation publication and signed commitments.
 ---
 
+Client-facing quotation headings should use the architect's mounted reference (for example DM.1.DIVERS), retaining the contractor document number as secondary identification.
+
+**Why:** The user identifies work by the mounted code, not the supplier's invoice-like numbering.
+
+**How to apply:** Use this hierarchy on shared quotation cards and their detail pages.
+
+Portal context images must load separately through authorised routes; only generated PDFs should embed image bytes.
+
+**Why:** An image-heavy quotation produced roughly 59 MiB of base64 content and failed to load in production while a generic message incorrectly reported expiry.
+
+**How to apply:** Preserve token expiry, explicit project membership, finalised-translation and per-line image ownership checks; never publish raw storage keys or bypass approval to serve images.
+
 The client may see a developing works budget composed of signed commitments plus unsigned quotations explicitly selected by the architect. Budget selection exposes only a reviewed title, reference, contractor and HT/TTC amounts; it does not authorise disclosure of the full quotation, translation, context or internal evidence.
 
 **Why:** The user wants clients to understand the emerging cost profile before quotations are ready for detailed review or signature, while retaining explicit control of disclosure.

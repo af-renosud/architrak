@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
+import { streamClientContextImage } from "../services/client-context-image";
 import { validateRequest } from "../middleware/validate";
 import { rateLimit } from "../middleware/rate-limit";
 import {
@@ -45,6 +46,7 @@ export { renderClientPortalShell };
 export interface ClientPortalDataPayload {
   devis: {
     ref: string;
+    documentRef?: string | null;
     description: string | null;
     /** English description (descriptionUk) shown beneath the FR label
      *  when present — Renosud's clients are routinely bilingual. */
@@ -195,6 +197,7 @@ async function loadOutboundAnalysisHtml(devisId: number): Promise<string | null>
 export async function buildClientPortalPayload(
   devis: Devis,
   tokenContext: { clientName: string | null; clientEmail: string } | null,
+  imageBase = `/api/devis/${devis.id}/client-checks/portal-preview`,
 ): Promise<ClientPortalDataPayload | null> {
   const project = await storage.getProject(devis.projectId);
   const checks = await storage.listClientChecks(devis.id);
@@ -222,7 +225,7 @@ export async function buildClientPortalPayload(
   // Contextual notes ride along with the finalised translation — they are
   // authored for, and rendered into, the same client-facing package.
   const contexts = translationFinalised
-    ? await loadLineContextRenders(devis.id)
+    ? await loadLineContextRenders(devis.id, id => `${imageBase}/context-assets/${id}`)
     : new Map<number, { html: string }>();
 
   const analysisHtml = translationFinalised
@@ -274,7 +277,8 @@ export async function buildClientPortalPayload(
 
   return {
     devis: {
-      ref: devis.devisNumber || devis.devisCode,
+      ref: devis.devisCode,
+      documentRef: devis.devisNumber,
       description: pendingWorkingApproval ? "The updated working quotation is awaiting architect approval." : devis.descriptionFr,
       descriptionEn: pendingWorkingApproval ? null : devis.descriptionUk ?? null,
       hasPdf: !!devis.pdfStorageKey,
@@ -433,6 +437,10 @@ const portalReadTokenLimiter = rateLimit({
   keyer: tokenOnlyKeyer,
   message: "Too many requests. Please try again in a minute.",
 });
+const portalImageLimiter = rateLimit({
+  name: "client-portal-image-tok", windowMs: 60_000, max: 240,
+  keyer: tokenOnlyKeyer, message: "Too many image requests. Please try again in a minute.",
+});
 const portalWriteIpLimiter = rateLimit({
   name: "client-portal-write-ip",
   windowMs: 60_000,
@@ -493,13 +501,21 @@ router.get(
     const payload = await buildClientPortalPayload(devis, {
       clientName: t.clientName,
       clientEmail: t.clientEmail,
-    });
+    }, `/p/client/${encodeURIComponent(tokenFromReq(req))}`);
     if (!payload) return res.status(404).json({ message: "Devis not found" });
     res.json(payload);
   },
 );
 
 /** Client posts a reply on an existing check thread. */
+router.get("/p/client/:token/context-assets/:assetId",
+  portalReadIpLimiter, portalImageLimiter,
+  async (req, res) => {
+    const lookup = await resolveClientCheckToken(tokenFromReq(req));
+    if (!lookup.ok) return res.sendStatus(lookup.reason === "expired" ? 410 : 404);
+    await streamClientContextImage(lookup.token.devisId, String(req.params.assetId), res);
+  });
+
 router.post(
   "/p/client/:token/messages",
   portalWriteIpLimiter, portalWriteTokenLimiter,

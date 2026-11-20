@@ -97,7 +97,7 @@ interface BuildHtmlInput {
  * pre-rendered context blocks inline; base64 data URIs keep the payload
  * self-contained there exactly as they do for DocRaptor.
  */
-export async function loadLineContextRenders(devisId: number): Promise<Map<number, LineContextRender>> {
+export async function loadLineContextRenders(devisId: number, assetUrl?: (id: number) => string): Promise<Map<number, LineContextRender>> {
   const out = new Map<number, LineContextRender>();
   const contexts = await storage.getDevisLineContexts(devisId);
   if (contexts.length === 0) return out;
@@ -122,6 +122,10 @@ export async function loadLineContextRenders(devisId: number): Promise<Map<numbe
       const asset = assetsById.get(assetId);
       // Ownership: only assets registered for this exact line are inlined.
       if (!asset || asset.devisLineItemId !== ctx.devisLineItemId) continue;
+      if (assetUrl) {
+        dataUris.set(assetId, assetUrl(assetId));
+        continue;
+      }
       try {
         const buffer = await getDocumentBuffer(asset.storageKey);
         dataUris.set(assetId, `data:${asset.mimeType};base64,${buffer.toString("base64")}`);

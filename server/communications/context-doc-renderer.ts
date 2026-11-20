@@ -69,12 +69,12 @@ function renderBlock(node: ContextBlockNode, assetDataUris: Map<number, string>)
       return `<ol>${renderListItems(node.content, assetDataUris)}</ol>`;
     case "image": {
       const dataUri = assetDataUris.get(node.attrs.assetId);
-      if (!dataUri || !dataUri.startsWith("data:image/")) {
+      if (!dataUri || !(dataUri.startsWith("data:image/") || /^\/(?:api\/devis\/|p\/client\/)[^"<>\\\s]+\/context-assets\/\d+$/.test(dataUri))) {
         return `<p class="ctx-missing-img">[image unavailable]</p>`;
       }
       const alt = escapeHtml(node.attrs.alt ?? "");
       const bounds = CONTEXT_IMAGE_BOUNDS[node.attrs.size ?? "large"] ?? CONTEXT_IMAGE_BOUNDS.large;
-      return `<div class="ctx-img-wrap"><img class="ctx-img" src="${dataUri}" alt="${alt}" style="max-width:${bounds.pdfWidth}mm;max-height:${bounds.pdfHeight}mm;width:auto;height:auto;" /></div>`;
+      return `<div class="ctx-img-wrap"><img class="ctx-img"${dataUri.startsWith("/") ? ' loading="lazy" decoding="async"' : ""} src="${escapeHtml(dataUri)}" alt="${alt}" style="max-width:${bounds.pdfWidth}mm;max-height:${bounds.pdfHeight}mm;width:auto;height:auto;" /></div>`;
     }
     default:
       // Unknown node types are impossible post-validation; render nothing.

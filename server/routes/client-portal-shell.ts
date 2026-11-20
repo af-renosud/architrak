@@ -212,7 +212,12 @@ let askLineItemId = null;
 let lineLabelById = {};
 
 async function loadData() {
-  const r = await fetch(DATA_URL);
+  let r;
+  try { r = await fetch(DATA_URL); }
+  catch (_) {
+    document.getElementById("root").innerHTML = '<div class="empty">Could not load the quotation. Check your connection. <button onclick="refresh()">Retry</button></div>';
+    return null;
+  }
   if (r.status === 410) {
     const j = await r.json().catch(() => ({}));
     document.getElementById("root").innerHTML =
@@ -222,7 +227,12 @@ async function loadData() {
     return null;
   }
   if (!r.ok) {
-    document.getElementById("root").innerHTML = '<div class="empty">Invalid or expired link.</div>';
+    const message = r.status === 401
+      ? "Your sign-in session has ended. Sign in to ArchiTrak again, then reopen this preview."
+      : r.status === 403 ? "You do not have access to this quotation."
+      : r.status === 404 ? "This quotation or link is no longer available."
+      : "The quotation could not be loaded. This does not mean your link has expired.";
+    document.getElementById("root").innerHTML = '<div class="empty">' + message + ' <button onclick="refresh()">Retry</button></div>';
     return null;
   }
   return r.json();
@@ -264,7 +274,7 @@ function renderDevisInfo(data) {
   // total HT, line items with English translations and contextual notes,
   // and the complete-package download.
   const d = data.devis || {};
-  const titleBits = [d.ref ? 'Devis ' + escapeHtml(d.ref) : null].filter(Boolean);
+  const titleBits = [d.ref ? 'Devis ' + escapeHtml(d.ref) : null, d.documentRef ? 'N° ' + escapeHtml(d.documentRef) : null].filter(Boolean);
   const title = titleBits.length ? '<h3 data-testid="text-devis-ref">' + titleBits.join(' — ') + '</h3>' : '';
   const descFr = d.description ? '<p class="devis-desc" data-testid="text-devis-description-fr">' + escapeHtml(d.description) + '</p>' : '';
   const descEn = d.descriptionEn ? '<p class="devis-desc devis-desc-en" data-testid="text-devis-description-en"><em>' + escapeHtml(d.descriptionEn) + '</em></p>' : '';

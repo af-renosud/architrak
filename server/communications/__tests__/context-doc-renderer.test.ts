@@ -5,6 +5,17 @@ import { contextDocSchema } from "@shared/context-doc";
 const parse = (content: unknown[]) => contextDocSchema.parse({ type: "doc", content });
 
 describe("renderContextDocHtml", () => {
+  it("renders protected portal URLs but rejects external image URLs", () => {
+    const doc = parse([{ type: "image", attrs: { assetId: 7 } }]);
+    for (const url of [
+      "/api/devis/51/client-checks/portal-preview/context-assets/7",
+      "/p/client/abc/context-assets/7",
+      "/p/client/project/abc/devis/51/context-assets/7",
+    ]) expect(renderContextDocHtml(doc, new Map([[7, url]]))).toContain(`src="${url}"`);
+    for (const url of ["https://example.com/7", "//example.com/7", "/p/client/abc/context-assets/7\" onerror=\"alert(1)"]) {
+      expect(renderContextDocHtml(doc, new Map([[7, url]]))).not.toContain("<img");
+    }
+  });
   it("escapes text content — HTML in text can never become markup", () => {
     const doc = parse([
       { type: "paragraph", content: [{ type: "text", text: `<script>alert("x")</script> & 'quotes'` }] },
