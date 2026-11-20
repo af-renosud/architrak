@@ -3748,6 +3748,16 @@ export type InsertClientProjectShareToken = z.infer<typeof insertClientProjectSh
  * §2.2.1 (the composite unique covers token_id lookups; devis_id gets its
  * own index).
  */
+export const clientProjectBudgets = pgTable("client_project_budgets", {
+  projectId: integer("project_id").primaryKey().references(() => projects.id, { onDelete: "cascade" }),
+  revision: integer("revision").notNull().default(0),
+  entries: jsonb("entries").$type<import("./client-budget").ClientBudgetEntry[]>().notNull().default([]),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  check("client_project_budgets_entries_array", sql`jsonb_typeof(${table.entries}) = 'array'`),
+  check("client_project_budgets_revision_positive", sql`${table.revision} >= 0`),
+]);
+
 export const clientProjectShareDevis = pgTable("client_project_share_devis", {
   id: serial("id").primaryKey(),
   tokenId: integer("token_id").notNull().references(() => clientProjectShareTokens.id, { onDelete: "cascade" }),
@@ -3778,6 +3788,7 @@ export type InsertClientProjectShareDevis = z.infer<typeof insertClientProjectSh
  * trail stays legible even after referenced rows disappear.
  */
 export const CLIENT_PROJECT_SHARE_AUDIT_ACTIONS = [
+  "budget_update",
   "issue",
   "rotate",
   "extend",

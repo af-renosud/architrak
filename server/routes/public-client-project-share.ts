@@ -26,6 +26,8 @@ import {
 } from "../services/project-overview-pdf.service";
 import type { ClientProjectShareToken, Devis } from "@shared/schema";
 import { quotationCommitmentStatus } from "../../shared/quotation-commitment";
+import { getPublicClientBudget } from "../services/client-budget";
+import type { PublicClientBudget } from "@shared/client-budget";
 
 /**
  * Public project-scoped client share link (Task #388) — /p/client/project/:token.
@@ -39,6 +41,7 @@ import { quotationCommitmentStatus } from "../../shared/quotation-commitment";
  * signals, never the content itself.
  */
 export interface ProjectSharePayload {
+  budget?: PublicClientBudget;
   project: { name: string } | null;
   client: { name: string | null; email: string };
   quotations: Array<{
@@ -163,6 +166,7 @@ export async function buildProjectSharePayload(
   }
 
   return {
+    budget: await getPublicClientBudget(token.projectId),
     project: project ? { name: project.name } : null,
     client: { name: token.clientName ?? null, email: token.clientEmail },
     quotations,
@@ -629,6 +633,30 @@ function renderQuotation(q) {
     + '</a>';
 }
 
+function renderBudget(b, f) {
+  if (!b || !b.entries.length) return "";
+  const signedHt = f ? f.totalContractedHt : 0;
+  const signedTtc = f ? f.totalContractedTtc : 0;
+  const kpi = (label, ht, ttc) => '<div class="fin-kpi"><div class="k-label">' + label
+    + '</div><div class="k-value">' + escapeHtml(formatAmount(ttc, "TTC"))
+    + '</div><div class="k-sub">' + escapeHtml(formatAmount(ht, "HT")) + '</div></div>';
+  const rows = b.entries.map(e => '<div class="card" data-testid="budget-entry-' + escapeHtml(e.devisId) + '">'
+    + '<div class="top"><div><h3>' + escapeHtml(e.title) + '</h3><p class="trade">'
+    + escapeHtml(e.reference) + ' · ' + escapeHtml(e.contractor) + '</p></div><div>'
+    + '<div class="amount">' + escapeHtml(formatAmount(e.amountTtc, "TTC")) + '</div><div class="trade">'
+    + escapeHtml(formatAmount(e.amountHt, "HT")) + '</div></div></div><div class="badges"><span class="badge '
+    + (e.status === "signed" ? 'b-status-signed">Signed' : 'b-status-awaiting_signature">Under consideration — not signed')
+    + '</span></div></div>').join('');
+  return '<section class="fin" data-testid="section-developing-budget"><h2>Developing works budget</h2><div class="fin-kpis">'
+    + kpi('Signed works', signedHt, signedTtc)
+    + kpi('Under consideration', b.unsignedHt, b.unsignedTtc)
+    + kpi('Current indicative total', signedHt + b.unsignedHt, signedTtc + b.unsignedTtc)
+    + '</div><p class="desc">Indicative budget based on signed works and selected quotations under consideration. Unsigned quotations are not commitments. This is not necessarily the complete project cost.</p>'
+    + '<details style="margin-top:16px"><summary style="cursor:pointer;font-weight:600;padding:8px 0">Selected quotations included in this budget (' + b.entries.length + ')</summary>'
+    + '<p class="trade" style="margin-bottom:12px">This list contains the architect’s budget selections. Signed works totals cover all active signed quotations in the project. Detailed documents are shared separately below.</p>'
+    + rows + '</details></section>';
+}
+
 async function load() {
   const root = document.getElementById("root");
   const meta = document.getElementById("meta");
@@ -650,8 +678,10 @@ async function load() {
   const greeting = '<p class="greeting" data-testid="text-greeting">Hello' + (name ? ' ' + escapeHtml(name) : '') + ', here are the quotations shared with you' + (data.project ? ' for ' + escapeHtml(data.project.name) : '') + '.</p>';
   const cards = (data.quotations && data.quotations.length)
     ? data.quotations.map(renderQuotation).join('')
-    : '<div class="empty" data-testid="text-no-quotations">No quotations have been shared with you yet.</div>';
-  root.innerHTML = greeting + renderFinancials(data.financials) + cards;
+    : '<div class="empty" data-testid="text-no-quotations">' + (data.budget && data.budget.entries.length
+      ? 'No detailed quotation documents have been shared yet. Selected budget amounts are shown above.'
+      : 'No quotations have been shared with you yet.') + '</div>';
+  root.innerHTML = greeting + renderBudget(data.budget, data.financials) + renderFinancials(data.financials) + cards;
 }
 
 load();

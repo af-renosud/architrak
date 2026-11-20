@@ -4,6 +4,9 @@ vi.mock("../storage", () => ({ storage: {
   getDevis: vi.fn(), getDevisTranslation: vi.fn(), getDevisCostAnalysis: vi.fn(), listClientChecks: vi.fn(),
 }}));
 vi.mock("../services/financial-summary.service", () => ({ getProjectFinancialSummary: vi.fn() }));
+vi.mock("../services/client-budget", () => ({
+  getPublicClientBudget: vi.fn(async () => ({ entries: [], unsignedHt: 0, unsignedTtc: 0 })),
+}));
 import { storage } from "../storage";
 import { getProjectFinancialSummary } from "../services/financial-summary.service";
 import { buildProjectSharePayload } from "../routes/public-client-project-share";

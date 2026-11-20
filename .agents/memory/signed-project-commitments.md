@@ -24,7 +24,7 @@ Public project links are a different disclosure boundary from architect reports.
 
 **Why:** Even an aggregate can disclose the exact price of an unpublished draft by subtraction. Publishing one quotation to a token does not authorize showing other draft prices.
 
-**How to apply:** Keep new pending/evidence aggregates operator-only, or explicitly scope them to visible quotations published on the current token. Test with both published and unpublished quotations.
+**How to apply:** Keep pending/evidence aggregates operator-only unless explicitly authorised for disclosure. The separately approved client-budget selection now authorises only its reviewed summary snapshots, independent of full-document publication; see [Client budget disclosure](client-budget-disclosure.md). Test selected and unselected drafts.
 
 Quotation list frames must distinguish signed quotations (green) from quotations sent for signature and still awaiting it (orange); unsent quotations remain neutral.
 

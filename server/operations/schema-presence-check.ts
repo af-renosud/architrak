@@ -70,6 +70,13 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0154_client_project_budgets", artifact: { kind: "all", artifacts: [
+    { kind: "table", table: "client_project_budgets" },
+    { kind: "constraint", table: "client_project_budgets", constraint: "client_project_budgets_pkey" },
+    { kind: "constraint", table: "client_project_budgets", constraint: "client_project_budgets_project_id_projects_id_fk" },
+    { kind: "constraint", table: "client_project_budgets", constraint: "client_project_budgets_entries_array" },
+    { kind: "constraint", table: "client_project_budgets", constraint: "client_project_budgets_revision_positive" },
+  ] } },
   { tag: "0153_jobs_jotter", artifact: { kind: "all", artifacts: [
     { kind: "table", table: "jobs_jotters" },
     { kind: "constraint", table: "jobs_jotters", constraint: "jobs_jotters_pkey" },

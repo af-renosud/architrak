@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import "./quotation-list-layout.css";
 import type { QuotationReplacementHistory as ReplacementHistoryEntry } from "@shared/quotation-replacement";
 import { ReplaceQuotationDialog } from "./ReplaceQuotationDialog";
+import { ClientBudgetAuditDetail, ClientBudgetControls } from "./ClientBudgetControls";
 import { QuotationReplacementHistory } from "./QuotationReplacementHistory";
 import { QuotationVersionGroup } from "./QuotationVersionGroup";
 import { filterQuotationVersionGroups, groupQuotationVersions, isReplacedQuotation } from "./quotation-version-groups";
@@ -1209,6 +1210,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                 {replacementBlock && <p id={`replacement-block-${d.id}`} className="mt-1 text-[10px] text-muted-foreground">{replacementBlock}</p>}
               </div>
               {nextActionEligible(d, isArchived) && <QuotationNextActionFlag devisId={d.id} projectId={projectId} controller={nextActions} onExpand={onExpandForAction} />}
+              <ClientBudgetControls projectId={projectId} devisId={d.id} isArchived={isArchived} />
               {/* Compact toolbar: status + mode + advisory + actions, with hairline dividers */}
               <div className="flex items-center gap-2 min-[900px]:gap-2.5 flex-wrap min-w-0 sm:ml-auto">
                 {/* Task #374 — the generic PENDING chip is de-emphasised now
@@ -1826,6 +1828,7 @@ export function DevisTab({
       </div>
 
       <ProjectClientSharePanel projectId={projectId} isArchived={isArchived} />
+      <ClientBudgetControls projectId={projectId} isArchived={isArchived} />
 
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -4365,7 +4368,7 @@ function invalidateProjectShare(projectId: string) {
 // extend / revoke / publish / unpublish), newest first.
 type ProjectShareAuditEntry = {
   id: number;
-  action: "issue" | "rotate" | "extend" | "revoke" | "publish" | "unpublish" | "archidoc_lookup";
+  action: "issue" | "rotate" | "extend" | "revoke" | "publish" | "unpublish" | "archidoc_lookup" | "budget_update";
   devisId: number | null;
   detail: string;
   createdAt: string;
@@ -4380,6 +4383,7 @@ const SHARE_AUDIT_ACTION_STYLES: Record<ProjectShareAuditEntry["action"], string
   unpublish: "bg-amber-50 text-amber-700 border-amber-200",
   // Task #409 — ArchiDoc consumed the link (read-only, informational).
   archidoc_lookup: "bg-slate-50 text-slate-600 border-slate-200",
+  budget_update: "bg-[#c1a27b]/10 text-[#0B2545] border-[#c1a27b]/40",
 };
 
 function ProjectShareHistory({ projectId }: { projectId: string }) {
@@ -4415,9 +4419,9 @@ function ProjectShareHistory({ projectId }: { projectId: string }) {
                 <span
                   className={`shrink-0 px-1.5 py-0.5 rounded-full border text-[8px] font-bold uppercase tracking-wide ${SHARE_AUDIT_ACTION_STYLES[e.action] ?? "bg-slate-100 text-slate-600 border-slate-300"}`}
                 >
-                  {e.action}
+                  {e.action === "budget_update" ? "Budget update" : e.action}
                 </span>
-                <span className="flex-1">{e.detail}</span>
+                {e.action === "budget_update" ? <ClientBudgetAuditDetail detail={e.detail} /> : <span className="flex-1">{e.detail}</span>}
                 <span className="shrink-0 text-slate-400">{formatDateTime(e.createdAt)}</span>
               </div>
             ))
