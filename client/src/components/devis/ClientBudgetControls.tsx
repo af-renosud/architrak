@@ -113,7 +113,7 @@ export function ClientBudgetControls({
   const [session, setSession] = useState(0);
   const closeGuard = useRef<() => boolean>(() => true);
   const { data, isLoading, isError, refetch, isFetching } = useQuery<ClientBudgetState>({
-    queryKey: ["/api/projects", projectId, "client-budget"],
+    queryKey: ["/api/projects", String(projectId), "client-budget"],
     queryFn: async () => (await apiRequest("GET", `/api/projects/${projectId}/client-budget`)).json(),
   });
   const candidate = data?.candidates.find((row) => row.devisId === devisId);
@@ -241,8 +241,8 @@ function ClientBudgetEditor({
       return (await apiRequest("PUT", `/api/projects/${projectId}/client-budget`, payload)).json();
     },
     onSuccess: (state) => {
-      queryClient.setQueryData(["/api/projects", projectId, "client-budget"], state);
-      void queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "client-share", "audit"] });
+      queryClient.setQueryData(["/api/projects", String(projectId), "client-budget"], state);
+      void queryClient.invalidateQueries({ queryKey: ["/api/projects", String(projectId), "client-share", "audit"] });
       toast({ title: "Client budget saved", description: "Detailed quotation publication has not changed." });
       onSaved();
     },
@@ -273,7 +273,7 @@ function ClientBudgetEditor({
     setReloadError("");
     try {
       const fresh: ClientBudgetState = await (await apiRequest("GET", `/api/projects/${projectId}/client-budget`)).json();
-      queryClient.setQueryData(["/api/projects", projectId, "client-budget"], fresh);
+      queryClient.setQueryData(["/api/projects", String(projectId), "client-budget"], fresh);
       setSnapshot(fresh);
       setDraft(initialDraft(fresh));
       setConflict(false);
