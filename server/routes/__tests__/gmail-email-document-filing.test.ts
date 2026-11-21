@@ -10,10 +10,13 @@ const mocks = vi.hoisted(() => ({
     getEmailDocument: vi.fn(),
     getAppSetting: vi.fn(),
     updateEmailDocument: vi.fn(),
+    getProjectIntakeDocumentByEmailDocumentId: vi.fn(),
   },
   enrich: vi.fn(),
   processEmailDocument: vi.fn(),
   pollInbox: vi.fn(),
+  prepare: vi.fn(),
+  promote: vi.fn(),
 }));
 
 vi.mock("../../storage", () => ({ storage: mocks.storage }));
@@ -34,7 +37,8 @@ vi.mock("../../services/email-document-processor.service", () => ({
 }));
 vi.mock("../../services/intake/manual-promotion.service", () => ({
   ManualPromotionError: class ManualPromotionError extends Error {},
-  promoteParkedFinancialDocument: vi.fn(),
+  prepareEmailManualPromotion: mocks.prepare,
+  promoteParkedFinancialDocument: mocks.promote,
 }));
 
 import gmailRouter from "../gmail";
@@ -77,6 +81,22 @@ const enriched = {
 };
 
 describe("read-only email document filing GET routes", () => {
+  it.each([false, true])("manual recovery reuses or prepares its source (existing=%s)", async (existing) => {
+    mocks.storage.getEmailDocument.mockResolvedValue({ ...doc, extractionStatus: "failed" });
+    mocks.storage.getProjectIntakeDocumentByEmailDocumentId.mockResolvedValue(existing ? { id: 80 } : undefined);
+    mocks.prepare.mockResolvedValue({ id: 80 });
+    mocks.promote.mockResolvedValue({ id: 35, kind: "devis", projectId: 12, replayed: false });
+    const response = await fetch(`${baseUrl}/api/email-documents/898/manual-promote`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed: true, kind: "devis", contractorId: 7, note: "Replacement quotation for review." }),
+    });
+    expect(response.status).toBe(201);
+    expect(mocks.prepare).toHaveBeenCalledTimes(existing ? 0 : 1);
+    expect(mocks.promote).toHaveBeenCalledWith(expect.objectContaining({
+      intakeDocumentId: 80, confirmedByUserId: 77, kind: "devis",
+    }));
+  });
+
   it.each(["/api/email-documents", "/api/email-documents/898"])("requires explicit authentication on %s", async (path) => {
     mocks.authenticated = false;
     const response = await fetch(`${baseUrl}${path}`);

@@ -16,6 +16,7 @@ import { requireAuth } from "../auth/middleware";
 import { enrichEmailDocumentsWithFiling } from "../services/email-document-filing.service";
 import {
   ManualPromotionError,
+  prepareEmailManualPromotion,
   promoteParkedFinancialDocument,
 } from "../services/intake/manual-promotion.service";
 
@@ -238,13 +239,8 @@ router.post(
       if (["credit_note", "avenant", "final_account"].includes(emailDoc.documentType)) {
         return res.status(409).json({ message: "This financial document type cannot be converted to an ordinary invoice or quotation.", code: "unsupported_financial_type" });
       }
-      const intakeDoc = await storage.getProjectIntakeDocumentByEmailDocumentId(emailDocumentId);
-      if (!intakeDoc) {
-        return res.status(409).json({
-          message: "This email attachment has no unified intake source. Assign it to a project and refresh first.",
-          code: "intake_mirror_missing",
-        });
-      }
+      const intakeDoc = await storage.getProjectIntakeDocumentByEmailDocumentId(emailDocumentId)
+        ?? await prepareEmailManualPromotion(emailDocumentId);
       const body = req.body as z.infer<typeof manualPromotionBodySchema>;
       const result = await promoteParkedFinancialDocument({
         intakeDocumentId: intakeDoc.id,

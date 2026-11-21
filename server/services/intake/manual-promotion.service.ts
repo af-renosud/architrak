@@ -148,6 +148,54 @@ function isPromotableState(doc: { analysisState: string; routingState: string })
     || (doc.analysisState === "failed" && doc.routingState === "unrouted");
 }
 
+/** Explicit recovery only: never enqueue automatic processing or revive deleted sources. */
+export async function prepareEmailManualPromotion(emailDocumentId: number) {
+  return db.transaction(async (tx) => {
+    const [email] = await tx.select().from(emailDocuments)
+      .where(eq(emailDocuments.id, emailDocumentId)).for("update");
+    if (!email) fail(404, "not_found", "Document not found.");
+    const [existing] = await tx.select().from(projectIntakeDocuments)
+      .where(eq(projectIntakeDocuments.sourceEmailDocumentId, emailDocumentId));
+    if (existing) return existing;
+    if (email.intakeDeletedAt || email.extractionStatus === "skipped") {
+      fail(409, "source_removed", "This attachment was previously removed from processing. It cannot be restored by this action.");
+    }
+    if (!email.projectId) fail(409, "project_required", "Choose the project for this attachment before submitting it.");
+    if (!email.storageKey) fail(409, "source_missing", "The original attachment is unavailable.");
+    if (email.devisId || email.invoiceId) fail(409, "already_linked", "This attachment already belongs to a quotation or invoice. Open the existing record instead.");
+    const data = email.extractedData as {
+      financialManualReview?: boolean;
+      financialTriage?: { decision?: { status?: string; projectId?: number; kind?: string } };
+    } | null;
+    const decision = data?.financialTriage?.decision;
+    if (email.extractionStatus !== "failed" || decision?.status !== "eligible"
+      || decision.projectId !== email.projectId || !["quotation", "invoice"].includes(decision.kind ?? "")
+      || data?.financialManualReview) {
+      fail(409, "source_review_required", "This attachment needs document or project verification before it can enter financial review. Retry its analysis first.");
+    }
+    const [project] = await tx.select().from(projects).where(eq(projects.id, email.projectId));
+    if (!project || project.archivedAt) fail(409, "project_archived", "Choose an active project before submitting this attachment.");
+    const [inserted] = await tx.insert(projectIntakeDocuments).values({
+      projectId: email.projectId,
+      fileName: email.attachmentFileName ?? "document.pdf",
+      storageKey: email.storageKey,
+      mimeType: "application/pdf",
+      source: "gmail",
+      sourceEmailDocumentId: email.id,
+      contentFingerprint: email.contentFingerprint,
+      analysisState: "failed",
+      routingState: "parked",
+      extractedData: email.extractedData,
+      notes: "Email extraction failed. Source prepared for explicit manual review.",
+    }).onConflictDoNothing().returning();
+    if (inserted) return inserted;
+    const [winner] = await tx.select().from(projectIntakeDocuments)
+      .where(eq(projectIntakeDocuments.sourceEmailDocumentId, email.id));
+    if (!winner) fail(409, "source_changed", "The attachment changed. Refresh before submitting it.");
+    return winner;
+  });
+}
+
 export async function promoteParkedFinancialDocument(
   input: ManualPromotionInput,
 ): Promise<ManualPromotionResult> {
@@ -293,6 +341,10 @@ export async function promoteParkedFinancialDocument(
         .for("update");
       if (!email || email.extractionStatus === "dismissed" || email.extractionStatus === "skipped") {
         fail(409, "email_source_unavailable", "The source email was dismissed or removed.");
+      }
+      if (email.intakeDeletedAt || email.projectId !== doc.projectId || email.storageKey !== doc.storageKey
+        || (email.contentFingerprint && email.contentFingerprint !== fingerprint)) {
+        fail(409, "email_source_changed", "The attachment or its project assignment changed. Refresh before submitting it.");
       }
     }
 

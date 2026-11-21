@@ -5,6 +5,7 @@ import { db } from "../db";
 import {
   benchmarkDocuments,
   contractors,
+  emailDocuments,
   devis,
   intakeManualPromotions,
   invoices,
@@ -34,6 +35,7 @@ vi.mock("../services/drive/upload-queue.service", () => ({
 
 import {
   ManualPromotionError,
+  prepareEmailManualPromotion,
   promoteParkedFinancialDocument,
 } from "../services/intake/manual-promotion.service";
 import {
@@ -106,6 +108,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await db.update(emailDocuments).set({ devisId: null, invoiceId: null }).where(
+    sql`${emailDocuments.projectId} IN (${projectId}, ${otherProjectId}, ${archivedProjectId})`,
+  );
   await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT set_config('app.allow_intake_manual_promotion_delete', 'true', true)`);
     await tx.delete(intakeManualPromotions).where(
@@ -125,6 +130,9 @@ afterAll(async () => {
   await db.delete(projectIntakeDocuments).where(
     sql`${projectIntakeDocuments.projectId} IN (${projectId}, ${otherProjectId}, ${archivedProjectId})`,
   );
+  await db.delete(emailDocuments).where(
+    sql`${emailDocuments.projectId} IN (${projectId}, ${otherProjectId}, ${archivedProjectId})`,
+  );
   await db.delete(projects).where(
     sql`${projects.id} IN (${projectId}, ${otherProjectId}, ${archivedProjectId})`,
   );
@@ -133,6 +141,59 @@ afterAll(async () => {
 });
 
 describe("parked financial document manual promotion", () => {
+  async function failedEmail(overrides: Partial<typeof emailDocuments.$inferInsert> = {}) {
+    const [email] = await db.insert(emailDocuments).values({
+      projectId, emailMessageId: `manual-recovery-${Date.now()}-${Math.random()}`,
+      attachmentFileName: "replacement.pdf", storageKey: "tests/replacement.pdf",
+      extractionStatus: "failed", documentType: "unknown",
+      extractedData: { financialTriage: { decision: { status: "eligible", projectId, kind: "quotation" } } },
+      ...overrides,
+    }).returning();
+    return email;
+  }
+
+  it("recovers a failed email once under concurrent requests and creates a separate review draft", async () => {
+    const email = await failedEmail({ contentFingerprint: fingerprint });
+    const [a, b] = await Promise.all([
+      prepareEmailManualPromotion(email.id), prepareEmailManualPromotion(email.id),
+    ]);
+    expect(a.id).toBe(b.id);
+    expect(a.routingState).toBe("parked");
+    const input = { intakeDocumentId: a.id, expectedFingerprint: fingerprint,
+      kind: "devis" as const, contractorId, note: "Updated replacement quotation for review.",
+      confirmedByUserId: userId };
+    const result = await promoteParkedFinancialDocument(input);
+    expect(result.id).not.toBe(targetDevisId);
+    expect((await promoteParkedFinancialDocument(input)).id).toBe(result.id);
+    const [old] = await db.select().from(devis).where(eq(devis.id, targetDevisId));
+    expect(old.status).toBe("draft");
+    expect(old.amountTtc).toBe("1200.00");
+  });
+
+  it.each([
+    { intakeDeletedAt: new Date() },
+    { extractionStatus: "skipped" },
+    { extractionStatus: "processing" },
+    { devisId: 0 }, // replaced below with a real linked quotation
+    { extractedData: { financialTriage: { decision: { status: "financial_excluded" } } } },
+  ])("refuses unsafe recovery %j", async (override) => {
+    const email = await failedEmail("devisId" in override ? { devisId: targetDevisId } : override);
+    await expect(prepareEmailManualPromotion(email.id)).rejects.toBeInstanceOf(ManualPromotionError);
+    const rows = await db.select().from(projectIntakeDocuments)
+      .where(eq(projectIntakeDocuments.sourceEmailDocumentId, email.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("rejects an archived or differently matched project", async () => {
+    const archived = await failedEmail({ projectId: archivedProjectId,
+      extractedData: { financialTriage: { decision: { status: "eligible", projectId: archivedProjectId, kind: "quotation" } } } });
+    await expect(prepareEmailManualPromotion(archived.id)).rejects.toMatchObject({ code: "project_archived" });
+    const mismatch = await failedEmail({ extractedData: {
+      financialTriage: { decision: { status: "eligible", projectId: otherProjectId, kind: "quotation" } },
+    } });
+    await expect(prepareEmailManualPromotion(mismatch.id)).rejects.toMatchObject({ code: "source_review_required" });
+  });
+
   it("persists only the requested TTC deposit and calculated HT while preserving contract evidence", async () => {
     const source = await createSource({
       analysisState: "analyzed", routingState: "parked",

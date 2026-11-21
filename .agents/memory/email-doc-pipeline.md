@@ -13,6 +13,10 @@ description: How captured Gmail attachments flow into intake, and the concurrenc
 **How to apply:** any new code path that processes or re-processes an email document must claim first and respect the attempt bound.
 
 ## Financial admission is separate from recognition failure
+Explicit manual recovery cannot depend on the success-only email-to-intake mirror: failed extraction can leave an eligible, assigned PDF without that record. Prepare a parked source idempotently, without starting an automatic job; preserve deleted-source, project-identity and fingerprint guards.
+
+**Why:** Otherwise the recovery button asks the user to assign an already-assigned PDF, but assignment cannot repair a mirror blocked by failed extraction.
+
 Financial review and its counters require positive financial evidence and active-project identity inside the PDF, or existing linked financial provenance. A recognition failure before that evidence exists must not become a financial task. Manual retry is not permission to bypass admission. Failures after successful admission remain actionable.
 
 Unverified technical copies have bounded retries and retention; expiry means unverified, not proven irrelevant. Preserve earlier positive admission across retries and project archival. All automatic cleanup paths must protect that evidence under locks, even before a quotation or invoice has been linked.
