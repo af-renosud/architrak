@@ -31,3 +31,9 @@ Optional model-generated PDF boxes may arrive in an unsupported format even when
 **Why:** A real OpenAI response supplied arrays where the application expects named box coordinates.
 
 **How to apply:** Keep model-authored hints distinct from deterministic source-verification evidence. Never allow model output to create a verification receipt.
+
+Durable extraction progress does not imply always-on execution. Keep hosting unchanged unless the user separately approves an always-on worker.
+
+**Why:** The reliability work was authorised without hosting-cost changes, and Autoscale can sleep while idle. Restart recovery is not a promise of uninterrupted unattended processing.
+
+**How to apply:** Recheck deployment metadata before promising background completion. Explain sleep/resume behaviour and offer an explicit hosting decision if continuous execution is needed.

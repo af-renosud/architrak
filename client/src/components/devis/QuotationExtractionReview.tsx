@@ -263,7 +263,7 @@ export function QuotationExtractionReview({
       <Retry error={review.error} onRetry={() => void review.refetch()} /> : review.data && <>
         {(!hasPdf || !sourceUrl) && <p className="text-muted-foreground">Source PDF link unavailable.</p>}
         {review.data?.running && <p role="status">Extraction is queued or running in the background. You can close this panel and continue working. Your quotation remains unchanged until you review and apply the result.</p>}
-        {!review.data?.running && review.data?.job?.message && <p role="status" className={review.data.job.state === "failed" ? "text-destructive" : ""}>{review.data.job.message}</p>}
+        {review.data?.job?.message && <p role="status" className={review.data.job.state === "failed" ? "text-destructive" : ""}>{review.data.job.message}</p>}
         {(candidatePending || appliedAttemptId !== null) && <details className="review-source-candidate rounded-lg border border-[#c1a27b]/40 bg-[#c1a27b]/[0.04] p-3" open={candidatePending}>
           <summary className="cursor-pointer font-semibold">
             Prepared candidate · {candidatePending ? `Pending approval (attempt ${candidateAttemptId})` :

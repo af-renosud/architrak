@@ -22,7 +22,7 @@ router.get("/api/devis/:id/extraction-review", requireAuth, async (req, res, nex
     const quotation = await storage.getDevis(id);
     if (!quotation) return res.status(404).json({ message: "Quotation not found" });
     const { rows } = await pool.query(`SELECT id,created_at,kind,outcome,category,reason,effort_minutes,snapshot->'diagnostic' AS diagnostic
-      FROM quotation_extraction_events WHERE devis_id=$1 ORDER BY id DESC LIMIT 200`, [id]);
+      FROM quotation_extraction_events WHERE devis_id=$1 AND outcome <> 'chunk_saved' ORDER BY id DESC LIMIT 200`, [id]);
     const { rows: candidates } = await pool.query(`SELECT id,snapshot FROM quotation_extraction_events
       WHERE devis_id=$1 AND kind='attempt' AND outcome IN ('failed','prepared') AND snapshot ? 'extraction'
       AND NOT EXISTS(SELECT 1 FROM quotation_extraction_events applied WHERE applied.devis_id=$1

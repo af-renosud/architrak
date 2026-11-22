@@ -2535,6 +2535,10 @@ export function mergeChunkedParses(
 }
 
 export interface ParseDocumentDeps {
+  checkpoint?: {
+    load(key: string): Promise<ParsedDocument | null>;
+    save(key: string, result: ParsedDocument, completed: number, total: number): Promise<void>;
+  };
   /** Existing quotation identity is already known; native recovery may skip AI metadata. */
   preferNativeQuotationRecovery?: boolean;
   getPdfPageCount?: (pdfBuffer: Buffer) => Promise<number | null>;
@@ -2754,9 +2758,27 @@ async function parseDocumentWithinBudget(
   let finalErrTransient = false;
   const chunkCount = Math.ceil(images.length / extractionChunkPages);
   let failedChunk = 1;
+  const checkpointIdentity = quotationHash("sha256").update(JSON.stringify({
+    version: "chunk-extraction-v1", source: quotationHash("sha256").update(pdfBuffer).digest("hex"),
+    provider, modelId, pages: pdfPageCount, rendered: images.length, extractionChunkPages,
+    prompt: SYSTEM_PROMPT + USER_PROMPT,
+    fallback: deps.checkpoint ? await _getOpenAIFallbackModelId() : null, geminiFallback: _getGeminiFallbackModelId(),
+  })).digest("hex");
+  const resumableChunk = async (index: number, chunkImages: Buffer[], texts: Array<string | null>) => {
+    const imageDigest = quotationHash("sha256");
+    for (const image of chunkImages) imageDigest.update(image);
+    const key = `${checkpointIdentity}:${index}:${imageDigest.digest("hex")}`;
+    const cached = await deps.checkpoint?.load(key);
+    if (cached) return { parsed: cached, err: null, transient: false };
+    const result = await parseChunk(chunkImages, texts);
+    if (result.parsed && result.parsed.documentType !== "unknown") {
+      await deps.checkpoint?.save(key, result.parsed, index + 1, chunkCount);
+    }
+    return result;
+  };
 
   if (chunkCount <= 1) {
-    ({ parsed, err: finalErr, transient: finalErrTransient } = await parseChunk(
+    ({ parsed, err: finalErr, transient: finalErrTransient } = await resumableChunk(0,
       images,
       pageTexts,
     ));
@@ -2766,7 +2788,7 @@ async function parseDocumentWithinBudget(
     for (let i = 0; i < chunkCount; i++) {
       const pageOffset = i * extractionChunkPages;
       const chunkImages = images.slice(pageOffset, pageOffset + extractionChunkPages);
-      const result = await parseChunk(
+      const result = await resumableChunk(i,
         chunkImages,
         pageTexts.slice(pageOffset, pageOffset + extractionChunkPages),
       );

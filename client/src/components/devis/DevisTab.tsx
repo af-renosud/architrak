@@ -6063,6 +6063,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
   // another project is opened. Do not allow a second request on remount.
   const extractionJob = useQuery<{ running?: boolean; job?: { state: string; message?: string } }>({
     queryKey: [`/api/devis/${devis.id}/extraction-review`],
+    refetchOnMount: "always",
     refetchInterval: query => query.state.data?.running ? 4000 : false,
   });
   const rescrapeRunning = useIsMutating({ mutationKey: ["quotation-rescrape", devis.id] }) > 0 || !!extractionJob.data?.running;

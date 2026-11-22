@@ -3,7 +3,7 @@ import { certificateProtectsQuotation } from "./quotation-certificate-protection
 import { createHash } from "node:crypto";
 import { verifyQuotationManifest } from "./quotation-source-manifest";
 import { collectPricedEvidence } from "./quotation-priced-evidence";
-import type { ParsedDocument } from "../gmail/document-parser";
+import type { ParsedDocument, ParseDocumentDeps } from "../gmail/document-parser";
 import { recordExtractionEvent } from "./quotation-extraction-events";
 import { hasSignedOrClosedEvidence } from "./quotation-source-guards";
 import { quotationWorkingVersion } from "./quotation-working-version";
@@ -70,15 +70,15 @@ interface RescrapeResult {
  * transaction that rolls back on any error — no partial state, no
  * duplicated line numbers under concurrent submits.
  */
-export async function rescrapeDevis(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }, assertOwner?: () => Promise<void>, eventWriter: typeof recordExtractionEvent = recordExtractionEvent): Promise<RescrapeResult> {
-  try { return await runRescrape(devisId, approval, assertOwner, eventWriter); }
+export async function rescrapeDevis(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }, assertOwner?: () => Promise<void>, eventWriter: typeof recordExtractionEvent = recordExtractionEvent, checkpoint?: ParseDocumentDeps["checkpoint"]): Promise<RescrapeResult> {
+  try { return await runRescrape(devisId, approval, assertOwner, eventWriter, checkpoint); }
   catch (error) {
     await eventWriter(devisId, "attempt", "failed", { category: "unavailable" });
     throw error;
   }
 }
 
-async function runRescrape(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }, assertOwner?: () => Promise<void>, eventWriter: typeof recordExtractionEvent = recordExtractionEvent): Promise<RescrapeResult> {
+async function runRescrape(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }, assertOwner?: () => Promise<void>, eventWriter: typeof recordExtractionEvent = recordExtractionEvent, checkpoint?: ParseDocumentDeps["checkpoint"]): Promise<RescrapeResult> {
   // ----- Phase 1: load + parse OUTSIDE the transaction. -----
   // The Gemini call can take several seconds; we don't want it holding a
   // row lock that long.
@@ -174,7 +174,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
     }
     parsed = candidate;
   } else {
-    parsed = await parseDocument(buffer, fileName, { preferNativeQuotationRecovery: true });
+    parsed = await parseDocument(buffer, fileName, { preferNativeQuotationRecovery: true, checkpoint });
   }
   await assertOwner?.();
 

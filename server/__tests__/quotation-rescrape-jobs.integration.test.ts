@@ -26,6 +26,56 @@ async function reset(state="pending") {
     ON CONFLICT(devis_id) DO UPDATE SET state=$2,owner='old-worker',attempts=0`,[id,state]);
 }
 describe("persistent extraction jobs", () => {
+  it("bounds automatic retries and requires an explicit retry after exhaustion", async () => {
+    await reset();
+    mock.run.mockResolvedValue({ success: false, status: 503, data: {} });
+    await runQuotationRescrape(id);
+    expect((await quotationRescrapeStatus(id)).state).toBe("pending");
+    await runQuotationRescrape(id);
+    expect((await quotationRescrapeStatus(id)).state).toBe("pending");
+    await runQuotationRescrape(id);
+    expect((await quotationRescrapeStatus(id)).state).toBe("failed");
+    await runQuotationRescrape(id);
+    expect(mock.run).toHaveBeenCalledTimes(3);
+  });
+  it("terminates a hung attempt and refuses its late result", async () => {
+    await reset();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let lateCheck!: () => Promise<void>;
+    mock.run.mockImplementationOnce(async (_id, _approval, check) => {
+      lateCheck = check;
+      await gate;
+      await check();
+      return { success: true, status: 202, data: { prepared: true } };
+    });
+    const original = globalThis.setTimeout;
+    const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: any, ms?: number, ...args: any[]) =>
+      original(fn, ms === 10 * 60_000 ? 30 : ms, ...args)) as typeof setTimeout);
+    try {
+      await runQuotationRescrape(id);
+      expect((await quotationRescrapeStatus(id)).state).toBe("failed");
+      await expect(lateCheck()).rejects.toThrow("ownership lost");
+    } finally { release(); timer.mockRestore(); }
+  });
+  it("persists compatible chunks across interrupted attempts and fences stale checkpoint writers", async () => {
+    await reset();
+    mock.run.mockImplementationOnce(async (_id, _approval, _check, _event, checkpoint) => {
+      await checkpoint.save("identity:0", { documentType: "quotation", amountHt: 10 }, 1, 2);
+      throw new Error("interrupted");
+    });
+    await runQuotationRescrape(id);
+    await reset("running");
+    mock.run.mockImplementationOnce(async (_id, _approval, _check, _event, checkpoint) => {
+      expect(await checkpoint.load("identity:0")).toMatchObject({ amountHt: 10 });
+      expect(await checkpoint.load("different-source:0")).toBeNull();
+      await pool.query("UPDATE quotation_rescrape_jobs SET owner='other' WHERE devis_id=$1", [id]);
+      await expect(checkpoint.save("identity:1", { documentType: "quotation" }, 2, 2)).rejects.toThrow();
+      return { success: true, status: 202, data: { prepared: true } };
+    });
+    await runQuotationRescrape(id);
+    expect((await quotationRescrapeStatus(id)).state).toBe("running");
+  });
   it("excludes duplicate workers and leaves the original untouched", async () => {
     await reset();
     let release!: () => void, began!: () => void;
