@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ParsedDocument } from "../gmail/document-parser";
+import { readNumberedPrice } from "./quotation-numbered-table";
 
 export const PRICED_EVIDENCE_PARSER = "priced-source-v1";
 export interface PricedEvidence {
@@ -23,6 +24,12 @@ export function collectPricedEvidence(parsed: ParsedDocument, pdf: Buffer): Pric
   const supported = native?.sourceDigest === sourceDigest
     && native.evidence.length === rows.length
     && native.evidence.every((entry, i) => {
+      if (native.parser === "numbered-table-v1") {
+        const source = readNumberedPrice(entry.priceText);
+        return !!source && entry.sourceText === rows[i].description
+          && source.quantity === rows[i].quantity && source.unit === rows[i].unit
+          && source.unitPrice === rows[i].unitPrice && source.total === rows[i].total;
+      }
       const fields = entry.priceText.split(/\s{2,}/);
       const numbers = fields.slice(-5).map(value => Number(value.replace(/[ \u00a0]/g, "").replace(",", ".")));
       return fields.length >= 6 && numbers.every(Number.isFinite)
@@ -32,7 +39,12 @@ export function collectPricedEvidence(parsed: ParsedDocument, pdf: Buffer): Pric
         && numbers[2] === rows[i].total;
     });
   return {
-    parser: PRICED_EVIDENCE_PARSER, sourceDigest, rowsDigest: pricedRowsDigest(rows),
+    parser: PRICED_EVIDENCE_PARSER, sourceDigest,
+    // Storage represents an unpriced context row's contribution as zero.
+    // Keep its original blank columns in native evidence, but fingerprint the
+    // persisted representation so saving does not invalidate genuine evidence.
+    rowsDigest: pricedRowsDigest(native?.parser === "numbered-table-v1"
+      ? rows.map(row => ({ ...row, total: row.total ?? 0 })) : rows),
     issues: supported ? [] : rows.length ? rows.map((row, i) => ({
       line: i + 1, page: row.pageHint,
       reason: "The description and charge have not been independently verified together in the original PDF. Review this item in Edit working quotation and confirm the original source total.",

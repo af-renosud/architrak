@@ -21,6 +21,7 @@ import { triageFinancialPdf, type FinancialTriage } from "./financial-pdf-triage
 import { safeErrorDiagnostic } from "../safe-error";
 import { emailHasFinancialAdmission } from "@shared/email-financial-gate";
 import { recoverPosteTable } from "../services/quotation-poste-table";
+import { recoverNumberedTable } from "../services/quotation-numbered-table";
 import { collectPricedEvidence, type PricedEvidence } from "../services/quotation-priced-evidence";
 import {
   countItemRowCandidates,
@@ -68,7 +69,7 @@ export interface ParsedDocument {
   pricedItemVerification?: PricedEvidence;
   /** Native table recovery, never model-authored or a human approval. */
   nativeTableRecovery?: {
-    parser: "poste-table-v1";
+    parser: "poste-table-v1" | "numbered-table-v1";
     sourceDigest: string;
     initialLineItems: ParsedDocument["lineItems"];
     evidence: Array<{ pages: number[]; priceText: string; sourceText: string }>;
@@ -2747,7 +2748,10 @@ async function parseDocumentWithinBudget(
     }
   }
 
-  if (parsed?.documentType === "quotation" && extractionChunkPages === 1) {
+  const numberedRecovery = parsed?.documentType === "quotation"
+    && pageTexts.length === images.length && pdfPageCount === images.length
+    ? recoverNumberedTable(pageTexts) : null;
+  if (parsed?.documentType === "quotation" && extractionChunkPages === 1 && !numberedRecovery) {
     const expectedRows = pageEvidence?.reduce(
       (sum, page) => sum + page.candidateRows,
       0,
@@ -2919,10 +2923,10 @@ async function parseDocumentWithinBudget(
     // Recover complete native sections independently of AI chunk boundaries.
     // This runs only on fresh parser output, never persisted working rows.
     if (parsed.documentType === "quotation") {
-      const native = recoverPosteTable(pageTexts);
+      const native = numberedRecovery ?? recoverPosteTable(pageTexts);
       if (native && pageTexts.length === images.length && pdfPageCount === images.length) {
         parsed.nativeTableRecovery = {
-          parser: "poste-table-v1",
+          parser: numberedRecovery ? "numbered-table-v1" : "poste-table-v1",
           sourceDigest: quotationHash("sha256").update(pdfBuffer).digest("hex"),
           initialLineItems: structuredClone(parsed.lineItems),
           evidence: native.evidence, amountHt: native.amountHt, amountTtc: native.amountTtc,
@@ -2931,6 +2935,14 @@ async function parseDocumentWithinBudget(
         parsed.amountHt = native.amountHt;
         parsed.amountTtc = native.amountTtc;
         parsed.tvaAmount = Math.round((native.amountTtc - native.amountHt) * 100) / 100;
+        if (numberedRecovery) {
+          // The strict reader accounts for every section and recap. Recap
+          // prices are not evidence of additional work on the summary page.
+          pageEvidence = pageTexts.map((text, index) => ({
+            page: index + 1, hasTextLayer: !!text?.trim(),
+            candidateRows: native.rows.filter(row => row.pageHint === index + 1).length,
+          }));
+        }
       }
     }
     // Task #350 — stamp deterministic coverage metadata (persisted via

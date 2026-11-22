@@ -454,7 +454,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
           lineNumber: i + 1,
           description: parsed.quotationVerification ? li.description : toSentenceCase(li.description || `Line ${i + 1}`) as string,
           quantity: String(li.quantity ?? 1),
-          unit: "u",
+          unit: li.unit || "u",
           unitPriceHt: String(roundCurrency(li.unitPrice ?? 0)),
           totalHt: String(roundCurrency(li.total ?? 0)),
           percentComplete: "0",
