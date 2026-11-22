@@ -41,7 +41,7 @@ import { Plus, ChevronDown, ChevronRight, FileText, ArrowUpRight, ArrowDownRight
 import { Link } from "wouter";
 import { getDevisUploadErrorTitle } from "@shared/devis-upload-errors";
 import { getInvoiceUploadErrorTitle } from "@shared/invoice-upload-errors";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useIsMutating } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { useAuth } from "@/hooks/use-auth";
@@ -6057,8 +6057,19 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
   const [suggestingLotUk, setSuggestingLotUk] = useState(false);
   const [descriptionUkLocal, setDescriptionUkLocal] = useState(devis.descriptionUk || "");
   const [rescrapeConfirmOpen, setRescrapeConfirmOpen] = useState(false);
+  // QueryClient retains pending mutations when this quotation is collapsed or
+  // another project is opened. Do not allow a second request on remount.
+  const rescrapeRunning = useIsMutating({ mutationKey: ["quotation-rescrape", devis.id] }) > 0;
 
   const rescrapeMutation = useMutation({
+    mutationKey: ["quotation-rescrape", devis.id],
+    onMutate: () => {
+      setRescrapeConfirmOpen(false);
+      toast({
+        title: "Re-scraping in the background",
+        description: "You can continue working elsewhere in the app. We’ll notify you when the extraction is ready or if it fails.",
+      });
+    },
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/devis/${devis.id}/rescrape`, {});
       return res.json();
@@ -6341,22 +6352,22 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
                     size="sm"
                     variant="outline"
                     className="h-8 gap-1.5 text-[11px] font-bold uppercase tracking-widest"
-                    disabled={!hasPdf || rescrapeMutation.isPending}
+                    disabled={!hasPdf || rescrapeRunning}
                     onClick={() => setRescrapeConfirmOpen(true)}
                     data-testid={`button-rescrape-pdf-${devis.id}`}
                   >
-                    {rescrapeMutation.isPending ? (
+                    {rescrapeRunning ? (
                       <Loader2 size={13} className="animate-spin" />
                     ) : (
                       <RefreshCw size={13} />
                     )}
-                    Re-scrape
+                    {rescrapeRunning ? "Re-scraping…" : "Re-scrape"}
                   </Button>
                 </span>
               </TooltipTrigger>
               <TooltipContent side="top" className="text-[10px] max-w-[240px]">
                 {hasPdf
-                  ? "Re-run AI extraction on the stored PDF. Replaces line items and amounts; keeps your manual edits to the devis code, contractor, lot and status."
+                  ? "Prepare a new extraction from the stored PDF in the background. Current content stays unchanged until you review and apply the candidate."
                   : "No PDF on file"}
               </TooltipContent>
             </Tooltip>
@@ -6437,9 +6448,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       )}
       <AlertDialog
         open={rescrapeConfirmOpen}
-        onOpenChange={(open) => {
-          if (!open && !rescrapeMutation.isPending) setRescrapeConfirmOpen(false);
-        }}
+        onOpenChange={setRescrapeConfirmOpen}
       >
         <AlertDialogContent data-testid={`dialog-confirm-rescrape-${devis.id}`}>
           <AlertDialogHeader>
@@ -6450,6 +6459,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
               images and questions will not change. Review the proposed extraction
               against the original PDF before explicitly applying it.
               Existing human corrections and linked financial evidence remain protected.
+              The window will close when you start, so you can continue working elsewhere in the app.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
