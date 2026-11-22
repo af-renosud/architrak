@@ -314,6 +314,9 @@ export async function promoteParkedFinancialDocument(
     let selectedContractorId: number;
     let targetDevis: typeof devis.$inferSelect | null = null;
     if (input.kind === "devis") {
+      const { quotationLifecycleIssues } = await import("@shared/quotation-decision");
+      const issues = quotationLifecycleIssues({ status: "draft", pdfStorageKey: doc.storageKey }, "register");
+      if (issues.length) fail(409, issues[0].code, issues[0].message);
       if (!input.contractorId) fail(422, "contractor_required", "Choose the contractor for this devis.");
       const [contractor] = await tx
         .select()

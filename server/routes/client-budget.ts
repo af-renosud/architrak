@@ -13,6 +13,12 @@ const body = z.object({
     devisId: z.number().int().positive(),
     title: z.string().trim().min(1).max(500),
     refresh: z.boolean(),
+    reviewedTotals: z.object({
+      amountHt: z.string().regex(/^\d{1,10}(?:\.\d{1,2})?$/),
+      amountTtc: z.string().regex(/^\d{1,10}(?:\.\d{1,2})?$/),
+      pdfPage: z.number().int().positive(),
+      confirmedFromPdf: z.literal(true),
+    }).strict().optional(),
   }).strict()).max(1000),
 }).strict();
 router.use(path, requireAuth, (_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });

@@ -78,6 +78,51 @@ afterEach(() => {
 });
 
 describe("ClientBudgetControls", () => {
+  it("reviews unavailable PDF totals from the quotation row and saves only an indicative budget override", async () => {
+    const state = budget();
+    Object.assign(state.candidates[1], { current: null, figuresUnavailable: true, blockedReason: "Extraction incomplete", canReviewIndicative: true, sourcePdfUrl: "/api/devis/2/pdf" });
+    mount(state, { devisId: 2 });
+    expect(screen.getByRole("checkbox", { name: "Include in client budget" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Review PDF totals for indicative budget" }));
+    expect(screen.getAllByText("Amounts unavailable").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Review original PDF totals" }));
+    expect(screen.getByRole("link", { name: "Open original PDF" })).toHaveAttribute("href", "/api/devis/2/pdf?variant=original");
+    const confirm = screen.getByRole("button", { name: "I checked these totals against the PDF" });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Source total HT"), { target: { value: "1 287,41" } });
+    fireEvent.change(screen.getByLabelText("Source total TTC"), { target: { value: "1544.89" } });
+    fireEvent.change(screen.getByLabelText("PDF page"), { target: { value: "3" } });
+    fireEvent.click(confirm);
+    const target = row("Quotation 2");
+    fireEvent.change(within(target).getByRole("textbox"), { target: { value: "Interior door draft" } });
+    review();
+    const confirmation = screen.getByRole("region", { name: "Confirm client budget" });
+    expectAmounts(confirmation, 1287.41, 1544.89);
+    expect(within(confirmation).getByText(/Indicative · PDF totals reviewed/)).toBeInTheDocument();
+    expect(putCalls()).toHaveLength(0);
+    confirmSave();
+    await waitFor(() => expect(putCalls()).toHaveLength(1));
+    expect(putCalls()[0][2].entries.find((item: { devisId: number }) => item.devisId === 2)).toEqual({
+      devisId: 2, title: "Interior door draft", refresh: true,
+      reviewedTotals: { amountHt: "1287.41", amountTtc: "1544.89", pdfPage: 3, confirmedFromPdf: true },
+    });
+  });
+  it("retains a saved reviewed snapshot without resubmitting or refreshing its evidence", async () => {
+    const state = budget();
+    state.candidates[0].shared!.basis = "reviewed_source_total";
+    Object.assign(state.candidates[0], { current: null, figuresUnavailable: true, blockedReason: "Extraction incomplete", canReviewIndicative: true });
+    mount(state); openManager(); review(); confirmSave();
+    await waitFor(() => expect(putCalls()).toHaveLength(1));
+    expect(putCalls()[0][2].entries[0]).toEqual({ devisId: 1, title: "Window joinery", refresh: false });
+  });
+  it.each(["signed", "excluded", "archived"] as const)("does not permit an indicative override for %s quotations", (status) => {
+    const state = budget();
+    Object.assign(state.candidates[1], { canReviewIndicative: true, current: null, figuresUnavailable: true, signed: status === "signed", excluded: status === "excluded" });
+    mount(state, { isArchived: status === "archived" }); openManager(); expand();
+    const action = screen.queryByRole("button", { name: "Review original PDF totals" });
+    if (status === "archived") expect(action).toBeDisabled();
+    else expect(action).not.toBeInTheDocument();
+  });
   it("stages the row checkbox and confirms one versioned save with an edited English title", async () => {
     const invalidate = vi.spyOn(queryClient, "invalidateQueries");
     mount(budget(), { devisId: 2 });

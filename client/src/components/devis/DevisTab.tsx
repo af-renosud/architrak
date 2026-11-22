@@ -1749,8 +1749,9 @@ export function DevisTab({
   const activeDevis = devisList?.filter(d => d.status !== "void") ?? [];
   const totalDevisCount = activeDevis.length;
   const unavailableFigureCount = activeDevis.filter(quotationAmountsUnavailable).length;
-  const totalAmountTtc = activeDevis.reduce((sum, d) => sum + parseFloat(d.amountTtc?.toString() ?? "0"), 0);
-  const totalAmountHt = activeDevis.reduce((sum, d) => sum + parseFloat(d.amountHt?.toString() ?? "0"), 0);
+  const knownFigureDevis = activeDevis.filter(d => !quotationAmountsUnavailable(d));
+  const totalAmountTtc = knownFigureDevis.reduce((sum, d) => sum + parseFloat(d.amountTtc?.toString() ?? "0"), 0);
+  const totalAmountHt = knownFigureDevis.reduce((sum, d) => sum + parseFloat(d.amountHt?.toString() ?? "0"), 0);
   const { pendingDevisCount, signedDevisCount } = countDevisSignOff(activeDevis);
 
   const uploadMutation = useMutation({
@@ -1831,7 +1832,7 @@ export function DevisTab({
     <div className="space-y-4">
       <div className="devis-summary-strip" aria-label="Quotation summary">
         <span data-testid="card-devis-count"><strong data-testid="text-devis-count">{totalDevisCount}</strong> quotations</span>
-        <span data-testid="card-devis-total">Quoted · <strong><Amount value={totalAmountTtc} denomination="TTC" /></strong> · <Amount value={totalAmountHt} denomination="HT" /><span className="ml-2 text-muted-foreground">not signed commitments{unavailableFigureCount > 0 ? ` · incomplete: ${unavailableFigureCount} quotation(s) awaiting figures` : ""}</span></span>
+        <span data-testid="card-devis-total">{unavailableFigureCount > 0 && knownFigureDevis.length === 0 ? "Quoted totals unavailable" : <>{unavailableFigureCount > 0 ? "Known quotation subtotal" : "Quoted"} · <strong><Amount value={totalAmountTtc} denomination="TTC" /></strong> · <Amount value={totalAmountHt} denomination="HT" /></>}<span className="ml-2 text-muted-foreground">not signed commitments{unavailableFigureCount > 0 ? ` · incomplete: ${unavailableFigureCount} quotation(s) awaiting figures` : ""}</span></span>
         <span data-testid="card-devis-pending"><strong data-testid="text-devis-pending">{pendingDevisCount}</strong> pending</span>
         <span data-testid="card-devis-signed"><strong data-testid="text-devis-signed">{signedDevisCount}</strong> signed</span>
       </div>

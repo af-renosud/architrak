@@ -5,6 +5,9 @@ export interface ClientBudgetEntry {
   contractor: string;
   amountHt: string;
   amountTtc: string;
+  basis?: "reviewed_source_total";
+  /** Internal provenance, stripped from public responses. */
+  sourceReview?: { digest: string; page: number; sourceKeyHash: string };
 }
 export interface ClientBudgetCandidate {
   devisId: number;
@@ -14,6 +17,9 @@ export interface ClientBudgetCandidate {
   signed: boolean;
   excluded: boolean;
   blockedReason: string | null;
+  canReviewIndicative?: boolean;
+  figuresUnavailable?: boolean;
+  sourcePdfUrl?: string;
 }
 export interface ClientBudgetState {
   version: string;
@@ -24,7 +30,9 @@ export interface ClientBudgetState {
 }
 export interface ClientBudgetSave {
   version: string;
-  entries: { devisId: number; title: string; refresh: boolean }[];
+  entries: { devisId: number; title: string; refresh: boolean; reviewedTotals?: {
+    amountHt: string; amountTtc: string; pdfPage: number; confirmedFromPdf: true;
+  } }[];
   alternativesReviewed: true;
 }
 export interface PublicClientBudget {

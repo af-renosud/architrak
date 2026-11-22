@@ -1,5 +1,4 @@
-import { verifyTranslationCoverage } from "./quotation-translation-coverage";
-import { quotationApprovalBlocker } from "./quotation-approval-guard";
+import { quotationActionDecision } from "./quotation-approval-guard";
 import type { ParsedDocument } from "../gmail/document-parser";
 import OpenAI from "openai";
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
@@ -163,11 +162,19 @@ export interface TranslateDevisOptions {
  * quotation/translation rows or calls semantic acceptance. The UI only fills
  * empty English fields and the architect still saves/approves the whole batch. */
 export async function suggestArchitectTranslation(draft: ArchitectCorrectionDraft) {
+  if (!draft.headerFr.trim() && !draft.lines.some(line => line.descriptionFr.trim()))
+    throw new Error("Add French wording before requesting English suggestions. Figures are not required.");
   const { provider, modelId } = await getActiveModel();
   const prompt = JSON.stringify({ headerDescriptionFr: draft.headerFr,
     lines: draft.lines.map((l, i) => ({ lineNumber: i + 1, description: l.descriptionFr })),
     instructions: "Translate this architect-reviewed French working interpretation. Return JSON {header:{description,descriptionExplanation,summary},lines:[{lineNumber,originalDescription,translation,explanation}]}. Do not change financial figures." });
   const result = provider === "openai" ? await translateWithOpenAI(prompt, modelId) : await translateWithGemini(prompt, modelId);
+  if ((draft.headerFr.trim() && !result.header?.description?.trim()) ||
+      draft.lines.some((line, index) => line.descriptionFr.trim() &&
+        !result.lines.some(target => target.lineNumber === index + 1 && target.translation.trim())) ||
+      result.lines.some(target => target.lineNumber < 1 || target.lineNumber > draft.lines.length) ||
+      new Set(result.lines.map(target => target.lineNumber)).size !== result.lines.length)
+    throw new Error("English suggestions were incomplete. Your draft is unchanged; retry or enter the missing wording yourself.");
   return result;
 }
 
@@ -181,9 +188,15 @@ export async function translateDevis(
 }> {
   const devis = await storage.getDevis(devisId);
   if (!devis) throw new Error(`Devis ${devisId} not found`);
+  const preparation = await quotationActionDecision(devisId, "prepare_translation");
+  if (!preparation.allowed) throw new Error(preparation.issues.find(issue => issue.severity === "blocker")!.message);
   if (await hasArchitectCorrection(devisId)) {
     const saved = await storage.getDevisTranslation(devisId);
     if (!saved) throw new Error("Architect working translation is missing.");
+    const header = saved.headerTranslated as DevisTranslationHeader | null;
+    const translated = (saved.lineTranslations ?? []) as DevisTranslationLine[];
+    if (!header?.description?.trim() && !translated.some(line => line.translation?.trim()))
+      throw new Error("No English wording is saved yet. Open Edit working quotation and choose Fill empty English fields, or enter your own wording.");
     // Even force/re-scrape does not replace human-authored English or context.
     return { translation: { header: (saved.headerTranslated ?? {}) as DevisTranslationHeader,
       lines: (saved.lineTranslations ?? []) as DevisTranslationLine[] }, provider: saved.provider ?? "architect", modelId: saved.modelId ?? "human" };
@@ -191,10 +204,6 @@ export async function translateDevis(
   // A draft translation is useful while reviewing unverified extraction.
   // Approval and outbound routes enforce source receipts; generation must not
   // force the architect to lose this aid while comparing with the original.
-  const extraction = devis.aiExtractedData as ParsedDocument | null;
-  const blocker = !extraction?.pricedItemVerification && (extraction?.illustratedRecovery || extraction?.quotationVerification)
-    ? await quotationApprovalBlocker(devisId) : null;
-  if (blocker) throw new Error(blocker);
 
   const existing = await storage.getDevisTranslation(devisId);
 
@@ -241,13 +250,24 @@ export async function translateDevis(
         const userEdited = editedByLine.get(freshLine.lineNumber);
         return userEdited ? userEdited : { ...freshLine, edited: false };
       });
+      for (const line of lines) {
+        if (!mergedLines.some(target => target.lineNumber === line.lineNumber) && editedByLine.has(line.lineNumber))
+          mergedLines.push(editedByLine.get(line.lineNumber)!);
+      }
+      mergedLines.sort((a, b) => a.lineNumber - b.lineNumber);
 
       const previousHeader = (existing?.headerTranslated as DevisTranslationHeader | null) || null;
       const headerWasEdited = !!(existing && existing.status === "edited" && previousHeader);
       finalHeader = (headerWasEdited ? previousHeader : result.header) || result.header;
     }
 
-    await verifyTranslationCoverage(devisId, mergedLines, finalHeader);
+    if (mergedLines.length !== lines.length || new Set(mergedLines.map(line => line.lineNumber)).size !== lines.length ||
+        lines.some(line => !mergedLines.find(target => target.lineNumber === line.lineNumber)?.translation?.trim()) ||
+        (!finalHeader?.description?.trim() && !mergedLines.some(line => line.translation?.trim()))) {
+      throw new Error("English wording is incomplete. Your existing content is preserved; review the missing descriptions in Edit working quotation.");
+    }
+    // Saving a draft is not an assertion of source or contractual verification.
+    // Approval/signature decisions retain their independent evidence checks.
     await storage.updateDevisTranslation(devisId, {
       status: "draft",
       provider,

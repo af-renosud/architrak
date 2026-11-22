@@ -32,6 +32,7 @@ beforeAll(async () => {
   await db.insert(devisLineItems).values({ devisId, lineNumber: 1, description: translated.originalDescription,
     totalHt: "100", unitPriceHt: "100", quantity: "1" });
   await db.insert(devisTranslations).values({ devisId, status: "finalised", lineTranslations: [translated],
+    headerTranslated: { description: "Disposable approval fixture" },
     approvedAt: new Date(), approvedBy: 999999, approvedByEmail: "fixture@local.test",
     translatedPdfStorageKey: "fixture-old", combinedPdfStorageKey: "fixture-old-combined", contextsVersion: 5 });
 });

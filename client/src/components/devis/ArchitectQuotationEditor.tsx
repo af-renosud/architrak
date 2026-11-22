@@ -22,6 +22,7 @@ import { keepQuotationDraft, readQuotationDraft } from "./quotation-draft-backup
 import type { QuotationReviewTarget } from "./QuotationExceptions";
 import { quotationFieldLabel } from "./quotation-review-labels";
 import { SourceTotalHelp } from "./SourceTotalHelp";
+import { RecoveredWordingComparison } from "./RecoveredWordingComparison";
 import { needsSourceConfirmation, quotationEditorField, quotationTargetRowId } from "./quotation-review-target";
 import type { QuotationIssue } from "@shared/quotation-decision";
 import "./architect-correction.css";
@@ -76,6 +77,9 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   const [sourcePage, setSourcePage] = useState<number | null>(null);
   const workspace = useRef<HTMLDivElement>(null);
   const submitLock = useRef(false);
+  // Query-cache publication can render before the mutation's state updates
+  // commit. Recognise our acknowledged snapshot independently of render timing.
+  const acknowledgedVersion = useRef<string | null>(null);
   const mounted = useRef(true);
   const frenchInput = useRef<HTMLTextAreaElement>(null);
   const confirmId = useId();
@@ -120,7 +124,8 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     setSelected(requestedRow?.clientKey ?? "header");
     setRequestedField(quotationEditorField(requested?.field, requested?.rowId == null) ?? null);
     requestedTarget.current = null;
-    setError(backup ? "Your unsaved working draft was restored in this tab. Review it before saving." : null);
+    const restoredChanges = !!backup && (!!recovered?.conflicts.length || JSON.stringify(loadedDraft) !== JSON.stringify(snapshot.data.draft));
+    setError(restoredChanges ? "Your unsaved working draft was restored in this tab. Review it before saving." : null);
     setStale(!!recovered?.conflicts.length); setSavedMessage(false); setVatRecoveryMessage(null);
     setLatest(recovered?.conflicts.length ? snapshot.data : null); setMergeChoices({});
     if (requested?.rowId != null && !requestedRow) setError("The requested working row is no longer present. Review the current working quotation; no rows have been changed.");
@@ -148,6 +153,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   const financialIssues = useMemo(() => draft ? correctionFinancialIssues(draft) : [], [draft]);
   const totals = useMemo(() => {
     if (!draft) return { value: null, error: null };
+    if (!draft.lines.some(line => line.kind === "priced" && line.included)) return { value: null, error: "No priced figures are available yet. Draft wording and context can be saved." };
     try { return { value: previewCorrectionTotals(draft), error: null }; }
     catch (cause) { return { value: null, error: cause instanceof Error ? cause.message : "Review financial values." }; }
   }, [draft]);
@@ -177,7 +183,8 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
   }, [open, devisId]);
   // Context saves also advance the working version. Rebase our local draft, never reset it.
   useEffect(() => {
-    if (!initialized.current || !snapshot.data || !original || !draft || pending || snapshot.data.version === original.version) return;
+    if (!initialized.current || !snapshot.data || !original || !draft || pending || submitLock.current ||
+        snapshot.data.version === acknowledgedVersion.current || snapshot.data.version === original.version) return;
     const result = mergeQuotationDraft(original.draft, draft, snapshot.data.draft);
     if (result.conflicts.length) {
       setLatest(snapshot.data); setMergeChoices({}); setStale(true);
@@ -267,6 +274,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     const submitted = structuredClone(draft);
     try {
       const result = await save.mutateAsync({ ...submitted, expectedVersion: original.version });
+      acknowledgedVersion.current = result.version;
       // A request can finish after route unmount. Do not recover an already-persisted new row as a duplicate.
       const backup = readQuotationDraft(devisId);
       if (backup?.original.version === original.version && JSON.stringify(backup.draft) === JSON.stringify(submitted)) {
@@ -275,6 +283,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
       }
       if (!mounted.current) return;
       setOriginal(result); setDraft(structuredClone(result.draft)); setSavedMessage(true); setLatest(null);
+      setStale(false); setError(null); setMergeChoices({});
       const selectedIndex = submitted.lines.findIndex(line => line.clientKey === selected);
       if (selectedIndex >= 0) {
         const submittedLine = submitted.lines[selectedIndex];
@@ -314,6 +323,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
     try {
       const result = await baseline.mutateAsync({ expectedVersion: original.version,
         ttc, page: Number(baselinePage), confirmedFromPdf: true });
+      acknowledgedVersion.current = result.version;
       if (!mounted.current) return;
       // Establishing source evidence does not overwrite unsaved content.
       setOriginal(result);
@@ -425,6 +435,19 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                     "Saved working quotation · no save is needed unless you make a change."}
               </p>
               {vatRecoveryMessage && <p role="status" className="rounded-md border p-3 text-sm">{vatRecoveryMessage}</p>}
+              <RecoveredWordingComparison devisId={devisId} draft={draft} version={original.version} disabled={!editable || stale}
+                onIncorporate={(candidate, wording, target) => {
+                  if (!editable || stale || candidate.expectedVersion !== original.version) return;
+                  const recoverySource = { attemptId: candidate.attemptId, sourceDigest: candidate.sourceDigest };
+                  const append = (existing: string) => [existing, wording].filter(Boolean).join("\n\n");
+                  if (target === "header") updateDraft({ headerFr: append(draft.headerFr), recoverySource });
+                  else if (target === "new-context") {
+                    const line = { ...createCorrectionLine("context", `new-${crypto.randomUUID()}`), descriptionFr: wording };
+                    updateDraft({ lines: [...draft.lines, line], recoverySource }); setSelected(line.clientKey);
+                  } else if (draft.lines.some(line => `row:${line.clientKey}` === target)) {
+                    updateDraft({ lines: draft.lines.map(line => `row:${line.clientKey}` === target ? { ...line, descriptionFr: append(line.descriptionFr) } : line), recoverySource });
+                  }
+                }} />
               {(financialIssues.length > 0 || vatRecoveryMessage) && <section className="rounded-lg border border-amber-300 p-4 space-y-3" aria-label="Financial checks">
                 <h3 className="font-semibold text-sm">{financialIssues.length ? `Financial checks — ${financialIssues.length} fields need attention` : "Recovered VAT — review before saving"}</h3>
                 <p className="text-xs">Your wording and context can still be saved. Approval requires the actual VAT and amounts from the original PDF; no rates are assumed.</p>
@@ -545,7 +568,12 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                   <Button type="button" size="sm" variant="outline" onClick={() => addLine("context")} disabled={!editable} className="text-[11px] justify-start"><Plus size={12} className="mr-2" />Add context-only line</Button>
                   <Button type="button" size="sm" variant="outline" onClick={() => addLine("priced")} disabled={!numericEditable} className="text-[11px] justify-start"><Plus size={12} className="mr-2" />Add priced line</Button>
                 </div>
-                {!draft.lines.length && <p className="text-[11px] text-muted-foreground px-2 mt-3">No working rows yet. Add content or a priced item to construct the interpretation.</p>}
+                {!draft.lines.length && <div className="text-[11px] text-muted-foreground px-2 mt-3 space-y-2">
+                  <p>No working rows yet. Extraction may be incomplete; you can save draft wording and context before figures are available.</p>
+                  <p>Start with the French header or add a context-only row. It creates no charge, not a zero-priced quotation item. Financial changes still need source reconciliation.</p>
+                  <a className="underline block" href={`/api/devis/${devisId}/pdf?variant=original`} target="_blank" rel="noopener noreferrer">Check the original PDF while drafting</a>
+                  <Button type="button" size="sm" variant="outline" disabled={!editable} onClick={() => addLine("context")}>Start a context-only draft row</Button>
+                </div>}
               </nav>
               <main className="p-5 md:p-7 min-w-0">
                 {requestedField && <p role="status" className="mb-3 text-xs text-muted-foreground">Finding target · {quotationFieldLabel(requestedField)}. Review against the original PDF before editing.</p>}
@@ -657,7 +685,7 @@ export function ArchitectQuotationEditor({ devisId, projectId, disabled = false,
                     {difference !== null && difference !== "0.00" && <SourceTotalHelp kind="difference" />}
                   </div>
                   {validationMessage && <p className="text-[11px] text-amber-900 mt-1 flex gap-1"><TriangleAlert size={12} className="shrink-0 mt-0.5" />{validationMessage}</p>}
-                  {totals.error && !financialDirty && <p className="text-[10px] text-muted-foreground mt-1">VAT treatment is incomplete. Text-only corrections remain available; complete figures before a financial batch.</p>}
+                  {totals.error && !financialDirty && <p className="text-[10px] text-muted-foreground mt-1">{totals.error} Text-only corrections remain available; complete figures before a financial batch.</p>}
                   {savedMessage && <p role="status" className="text-[11px] text-emerald-800 mt-1">Saved. Review and approve the latest checklist above.</p>}
                   <p className="text-[10px] text-muted-foreground mt-1">{financialDirty ? "Financial batch · must reconcile with the confirmed source total." : "Wording-only saves do not require a new source-total confirmation."} Wording and figures save on request; rich context saves automatically. Original PDF and signed evidence are unchanged.</p>
                 </div>

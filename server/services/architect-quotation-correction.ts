@@ -59,6 +59,7 @@ export function draftFrom(s: Pick<State, "quotation" | "lines" | "translation" |
   const explicitRate = evidence?.autoLiquidation === true ? "0"
     : typeof evidence?.tvaRate === "number" && evidence.tvaRate >= 0 && evidence.tvaRate <= 100 ? String(evidence.tvaRate) : "";
   return {
+    ...(metadata?.recoverySource ? { recoverySource: metadata.recoverySource } : {}),
     headerFr: quotationParagraph(s.quotation.description_fr), headerEn: quotationParagraph(header.description),
     explanationFr: metadata?.explanationFr ?? header.descriptionExplanationFr ?? "",
     explanationEn: header.descriptionExplanation ?? "", summaryEn: header.summary ?? "",
@@ -142,6 +143,15 @@ export function createArchitectCorrectionService(deps: { pool: pg.Pool; readPdf:
     const { expectedVersion, ...draft } = parsed.data;
     const initial = await get(devisId);
     let sourceDigest: string | null = null;
+    if (draft.recoverySource) {
+      const row = (await deps.pool.query("SELECT pdf_storage_key FROM devis WHERE id=$1", [devisId])).rows[0];
+      const receipt = await pdfReceipt(deps.readPdf, row?.pdf_storage_key);
+      const candidate = (await deps.pool.query(`SELECT snapshot FROM quotation_extraction_events
+        WHERE id=$1 AND devis_id=$2 AND kind='attempt' AND outcome IN ('failed','prepared')`,
+        [draft.recoverySource.attemptId, devisId])).rows[0]?.snapshot;
+      if (receipt.digest !== draft.recoverySource.sourceDigest || candidate?.sourceDigest !== receipt.digest)
+        throw new ArchitectCorrectionError("The recovered wording belongs to a different original PDF. Reload the comparison; your draft is preserved.");
+    }
     if (initial.baseline) {
       const row = (await deps.pool.query("SELECT source_storage_key FROM quotation_source_baselines WHERE devis_id=$1", [devisId])).rows[0];
       sourceDigest = (await pdfReceipt(deps.readPdf, row.source_storage_key)).digest;

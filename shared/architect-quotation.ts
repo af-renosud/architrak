@@ -15,6 +15,7 @@ export const architectCorrectionDraftSchema = z.object({
   explanationEn: z.string().max(100000), summaryEn: z.string().max(100000), discountHt: money,
   vatRounding: z.enum(["bucket", "line"]).optional(),
   lines: z.array(architectCorrectionLineSchema).max(1000),
+  recoverySource: z.object({ attemptId: z.number().int().positive(), sourceDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
 }).strict();
 export const architectCorrectionSaveSchema = architectCorrectionDraftSchema.extend({ expectedVersion: z.string().min(1).max(128) });
 export const architectBaselineConfirmationSchema = z.object({

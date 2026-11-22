@@ -8,6 +8,17 @@ function fixture(): ArchitectCorrectionDraft {
     lines: [1, 2].map(id => ({ ...createCorrectionLine("priced", `row-${id}`), id, descriptionFr: `Ligne ${id}`, vatRate: "10", totalHt: "84.30" })) };
 }
 describe("working quotation three-way preservation", () => {
+  it("preserves optional recovery provenance through concurrent context rebases", () => {
+    const base = fixture(), mine = structuredClone(base), latest = structuredClone(base);
+    mine.recoverySource = { attemptId: 17, sourceDigest: "a".repeat(64) };
+    mine.lines[0].descriptionFr += "\n\nTexte récupéré";
+    latest.summaryEn = "Concurrent context update";
+    const merged = mergeQuotationDraft(base, mine, latest);
+    expect(merged.conflicts).toEqual([]);
+    expect(merged.draft.recoverySource).toEqual(mine.recoverySource);
+    expect(merged.draft.summaryEn).toBe(latest.summaryEn);
+    expect(merged.draft.lines[0].descriptionFr).toBe(mine.lines[0].descriptionFr);
+  });
   it("combines nonoverlapping edits without overwriting foreign wording or financial values", () => {
     const base = fixture(), mine = structuredClone(base), latest = structuredClone(base);
     mine.headerFr = "Mon titre"; mine.lines[0].descriptionEn = "Human English";

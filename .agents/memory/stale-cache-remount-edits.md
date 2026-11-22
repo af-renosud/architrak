@@ -47,3 +47,14 @@ or silently erase another author's work while presenting a reassuring saved stat
 
 **How to apply:** keep recoverable local drafts, coordinate all pending work,
 and refresh the approval revision after saves or explicit conflict resolution.
+
+An editor must distinguish its own acknowledged save from a foreign update before
+running a three-way merge; mutation pending flags alone are insufficient.
+
+**Why:** Server-side paragraph normalisation changed the returned wording while
+query-cache publication raced React state updates. A successful save appeared
+as a concurrent conflict until the user closed and reopened the editor.
+
+**How to apply:** Treat the acknowledged server revision as authoritative for
+that save, preserve genuinely foreign conflicts, and test normalised responses
+as well as byte-for-byte echoes of the submitted draft.

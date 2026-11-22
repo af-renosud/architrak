@@ -33,6 +33,93 @@ const fixture = (): ArchitectCorrectionSnapshot => ({
 const response = (data: unknown, status = 200) => ({
   ok: status >= 200 && status < 300, status, json: async () => data, text: async () => JSON.stringify(data),
 });
+it("copies only explicitly paired recovered French wording and saves its provenance", async () => {
+  const fallback = fetchMock.getMockImplementation()!;
+  const candidate = { attemptId: 27, sourceDigest: "a".repeat(64), expectedVersion: "working-v1", headerFr: "En-tête récupéré",
+    lines: [{ index: 0, descriptionFr: "Passage récupéré du PDF", quantity: "47", unit: "m²", unitPriceHt: "82.13", totalHt: "3860.11" }] };
+  fetchMock.mockImplementation(async (url: string, options?: RequestInit) => url.endsWith("/recovered-content") ? response({ candidate }) : fallback(url, options));
+  mount(); await open();
+  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/recovered-content"))).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Compare recovered content (optional)" }));
+  await screen.findByLabelText("Recovered source passage");
+  const copy = screen.getByRole("button", { name: "Append French wording to selected target" });
+  expect(copy).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Recovered source passage"), { target: { value: "line:0" } });
+  expect(copy).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Current target"), { target: { value: "row:line-102" } });
+  fireEvent.click(copy);
+  expect(saves).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+  await waitFor(() => expect(saves).toHaveLength(1));
+  expect(saves[0].recoverySource).toEqual({ attemptId: 27, sourceDigest: "a".repeat(64) });
+  expect(saves[0].lines[1]).toEqual({ ...fixture().draft.lines[1], descriptionFr: "Porte B\n\nPassage récupéré du PDF" });
+  expect(saves[0].lines[0]).toEqual(fixture().draft.lines[0]);
+});
+it("recognises its own normalised save without a false conflict or unsaved backup", async () => {
+  const fallback = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+    const result = await fallback(url, options);
+    if (url === path && options?.method === "PUT") {
+      persisted.draft.headerFr = persisted.draft.headerFr.replace(/\s+/g, " ");
+      return response(structuredClone(persisted));
+    }
+    return result;
+  });
+  mount(); await open();
+  fireEvent.change(screen.getByRole("textbox", { name: "French header" }), { target: { value: "Menuiseries\n\nQualification" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+  await screen.findByText(/Saved. Review and approve/);
+  await waitFor(() => expect(quotationWorkBlocked(42)).toBe(false));
+  expect(screen.queryByText(/Conflict · your draft/)).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "French header" })).toHaveValue("Menuiseries Qualification");
+  fireEvent.click(screen.getAllByRole("button", { name: "Close" })[0]);
+  await open();
+  expect(screen.queryByText("Unsaved draft restored")).not.toBeInTheDocument();
+});
+it("blocks recovered wording when the candidate version differs from the original version", async () => {
+  const fallback = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (url: string, options?: RequestInit) => url.endsWith("/recovered-content")
+    ? response({ candidate: { attemptId: 27, sourceDigest: "a".repeat(64), expectedVersion: "old-version", headerFr: "Ancien texte", lines: [] } }) : fallback(url, options));
+  mount(); await open();
+  fireEvent.click(screen.getByRole("button", { name: "Compare recovered content (optional)" }));
+  await screen.findByLabelText("Recovered source passage");
+  fireEvent.change(screen.getByLabelText("Recovered source passage"), { target: { value: "header" } });
+  fireEvent.change(screen.getByLabelText("Current target"), { target: { value: "header" } });
+  expect(screen.getByRole("button", { name: "Append French wording to selected target" })).toBeDisabled();
+  expect(screen.getByRole("textbox", { name: "French header" })).toHaveValue(fixture().draft.headerFr);
+  expect(saves).toHaveLength(0);
+});
+it("incorporates recovered wording as genuine context while preserving all existing financial identities", async () => {
+  const fallback = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (url: string, options?: RequestInit) => url.endsWith("/recovered-content")
+    ? response({ candidate: { attemptId: 28, sourceDigest: "b".repeat(64), expectedVersion: "working-v1", headerFr: "Conditions de chantier", lines: [] } }) : fallback(url, options));
+  mount(); await open();
+  fireEvent.click(screen.getByRole("button", { name: "Compare recovered content (optional)" }));
+  await screen.findByLabelText("Recovered source passage");
+  fireEvent.change(screen.getByLabelText("Recovered source passage"), { target: { value: "header" } });
+  fireEvent.change(screen.getByLabelText("Current target"), { target: { value: "new-context" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add French wording as context only" }));
+  expect(screen.getByRole("textbox", { name: "Full French description" })).toHaveValue("Conditions de chantier");
+  fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+  await waitFor(() => expect(saves).toHaveLength(1));
+  expect(saves[0].lines.slice(0, 3)).toEqual(fixture().draft.lines);
+  expect(saves[0].lines[3]).toMatchObject({ kind: "context", included: false, id: null, descriptionFr: "Conditions de chantier", descriptionEn: "" });
+  expect(saves[0].recoverySource).toEqual({ attemptId: 28, sourceDigest: "b".repeat(64) });
+});
+it("offers a context-only start for an empty quotation without displaying a computed zero", async () => {
+  persisted.draft.lines = [];
+  persisted.baseline = null;
+  mount(); await open();
+  expect(screen.getByText(/No working rows yet. Extraction may be incomplete/)).toBeInTheDocument();
+  expect(screen.getByText("Not yet computable")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Start a context-only draft row" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Full French description" }), { target: { value: "Descriptif en attente du chiffrage" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+  await waitFor(() => expect(saves).toHaveLength(1));
+  expect(saves[0].lines).toHaveLength(1);
+  expect(saves[0].lines[0]).toMatchObject({ kind: "context", included: false, descriptionFr: "Descriptif en attente du chiffrage" });
+  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/source-baseline"))).toBe(false);
+});
 function mount(compact = false, hideTrigger = false, disabled = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
   return { ...render(<QueryClientProvider client={client}><ArchitectQuotationEditor devisId={42} projectId="8" compact={compact} hideTrigger={hideTrigger} disabled={disabled} /></QueryClientProvider>), client };

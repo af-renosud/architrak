@@ -1,11 +1,23 @@
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
-import { clientProjectBudgets, clientProjectShareAudit, contractors, devis, projects, type Devis } from "@shared/schema";
+import { clientProjectBudgets, clientProjectShareAudit, contractors, devis, devisTranslations, projects, type Devis } from "@shared/schema";
 import type { ClientBudgetEntry, ClientBudgetSave, ClientBudgetState, PublicClientBudget } from "@shared/client-budget";
 import { quotationCommitmentStatus } from "@shared/quotation-commitment";
 import { getProjectFinancialSummary } from "./financial-summary.service";
 import { quotationAmountsUnavailable } from "@shared/quotation-amount-availability";
+import { getDocumentBuffer } from "../storage/object-storage";
+import { PDFDocument } from "pdf-lib";
+import { quotationLifecycleIssues } from "@shared/quotation-decision";
+
+const keyHash = (key: string) => createHash("sha256").update(key).digest("hex");
+function canReviewIndicative(d: Devis) {
+  return quotationCommitmentStatus(d) !== "signed" && !quotationLifecycleIssues(d, "indicative_budget").length;
+}
+function retainedIndicative(d: Devis, entry?: ClientBudgetEntry | null) {
+  return canReviewIndicative(d) && entry?.basis === "reviewed_source_total" &&
+    entry.sourceReview?.sourceKeyHash === keyHash(d.pdfStorageKey!);
+}
 
 export class ClientBudgetError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -49,14 +61,19 @@ export function budgetState(record: BudgetRecord, rows: Source[], readOnly: bool
   const sorted = [...rows].sort((a, b) => a.quotation.id - b.quotation.id);
   const candidates = sorted.map(({ quotation: d, contractor }) => {
     const current = budgetSnapshot(d, contractor);
-    const shared = record.entries.find(e => e.devisId === d.id) ?? null;
+    const saved = record.entries.find(e => e.devisId === d.id) ?? null;
+    const shared = saved?.basis === "reviewed_source_total" && quotationCommitmentStatus(d) !== "signed"
+      && !retainedIndicative(d, saved) ? null : saved;
     return {
       devisId: d.id, current, shared,
       changed: !!shared && ["reference", "contractor", "amountHt", "amountTtc"].some(k =>
         shared[k as keyof ClientBudgetEntry] !== current[k as keyof ClientBudgetEntry]),
       signed: quotationCommitmentStatus(d) === "signed",
-      excluded: !!budgetLifecycleBlock(d),
+      excluded: !!budgetLifecycleBlock(d) && !canReviewIndicative(d),
       blockedReason: budgetBlockReason(d),
+      canReviewIndicative: canReviewIndicative(d),
+      figuresUnavailable: quotationAmountsUnavailable(d),
+      sourcePdfUrl: d.pdfStorageKey ? `/api/devis/${d.id}/pdf?variant=original` : undefined,
     };
   });
   let signedHt = 0, signedTtc = 0;
@@ -66,11 +83,13 @@ export function budgetState(record: BudgetRecord, rows: Source[], readOnly: bool
       signedTtc += budgetCents(c.current.amountTtc)!;
     }
   }
-  const version = createHash("sha256").update(JSON.stringify({ record, candidates, readOnly })).digest("hex");
+  const version = createHash("sha256").update(JSON.stringify({ record, candidates, readOnly,
+    sources: sorted.map(({ quotation: d }) => [d.id, d.pdfStorageKey, d.updatedAt]) })).digest("hex");
   return { version, candidates, signedHt: signedHt / 100, signedTtc: signedTtc / 100, readOnly };
 }
 
-export function prepareBudgetEntries(state: ClientBudgetState, input: ClientBudgetSave): ClientBudgetEntry[] {
+export function prepareBudgetEntries(state: ClientBudgetState, input: ClientBudgetSave,
+  receipts = new Map<number, NonNullable<ClientBudgetEntry["sourceReview"]>>()): ClientBudgetEntry[] {
   if (state.readOnly) throw new ClientBudgetError(409, "Archived projects cannot change the client budget.");
   if (state.version !== input.version) throw new ClientBudgetError(409, "The quotations or client budget changed. Reload and review before saving; your selections have not been applied.");
   if (!input.alternativesReviewed) throw new ClientBudgetError(400, "Confirm that alternative quotations are not being added together.");
@@ -78,6 +97,18 @@ export function prepareBudgetEntries(state: ClientBudgetState, input: ClientBudg
   return input.entries.map(selection => {
     const candidate = state.candidates.find(c => c.devisId === selection.devisId);
     if (!candidate) throw new ClientBudgetError(400, "Quotation not found in this project.");
+    if (selection.reviewedTotals) {
+      const amount = selection.reviewedTotals;
+      const ht = budgetCents(amount.amountHt), ttc = budgetCents(amount.amountTtc);
+      const receipt = receipts.get(selection.devisId);
+      if (!candidate.canReviewIndicative || candidate.signed || !candidate.current || !receipt)
+        throw new ClientBudgetError(409, "Review the original quotation PDF before sharing this indicative total.");
+      if (!amount.confirmedFromPdf || !selection.refresh || ht === null || ttc === null || ttc < ht ||
+          !selection.title.trim() || receipt.page !== amount.pdfPage)
+        throw new ClientBudgetError(400, "Confirm valid HT and TTC totals and their PDF page. This changes the budget only.");
+      return { ...candidate.current, title: selection.title.trim(), amountHt: (ht / 100).toFixed(2),
+        amountTtc: (ttc / 100).toFixed(2), basis: "reviewed_source_total", sourceReview: receipt };
+    }
     // Retain hidden snapshots for provenance, but never expose inactive entries.
     if (candidate.blockedReason && (selection.refresh || !candidate.shared)) throw new ClientBudgetError(409, candidate.blockedReason);
     const source = selection.refresh ? candidate.current : candidate.shared;
@@ -92,13 +123,16 @@ export function publicBudget(record: BudgetRecord, rows: Source[]): PublicClient
   const entries: PublicClientBudget["entries"] = [];
   for (const shared of record.entries) {
     const row = rows.find(r => r.quotation.id === shared.devisId);
-    if (!row || budgetLifecycleBlock(row.quotation)) continue;
+    if (!row || (budgetLifecycleBlock(row.quotation) && !retainedIndicative(row.quotation, shared))) continue;
+    if (shared.basis === "reviewed_source_total" && quotationCommitmentStatus(row.quotation) !== "signed"
+      && !retainedIndicative(row.quotation, shared)) continue;
     const signed = quotationCommitmentStatus(row.quotation) === "signed";
     if (signed && budgetBlockReason(row.quotation)) continue;
     // Signed commitment is live authoritative financial data; unsigned remains the approved snapshot.
     const entry = signed ? { ...budgetSnapshot(row.quotation, row.contractor), title: shared.title } : shared;
     if (!signed) { ht += budgetCents(entry.amountHt)!; ttc += budgetCents(entry.amountTtc)!; }
-    entries.push({ ...entry, status: signed ? "signed" : "under_consideration" });
+    const { sourceReview: _privateEvidence, ...publicEntry } = entry;
+    entries.push({ ...publicEntry, status: signed ? "signed" : "under_consideration" });
   }
   return { entries, unsignedHt: ht / 100, unsignedTtc: ttc / 100 };
 }
@@ -108,9 +142,16 @@ async function loadBudget(projectId: number, tx: typeof db, lock = false) {
   const [project] = await (lock ? projectQuery.for("update") : projectQuery);
   if (!project) throw new ClientBudgetError(404, "Project not found.");
   const [record] = await tx.select().from(clientProjectBudgets).where(eq(clientProjectBudgets.projectId, projectId));
-  const query = tx.select({ quotation: devis, contractor: contractors.name }).from(devis)
-    .innerJoin(contractors, eq(contractors.id, devis.contractorId)).where(eq(devis.projectId, projectId)).orderBy(devis.id);
-  const rows = await (lock ? query.for("share", { of: devis }) : query);
+  const query = tx.select({ quotation: devis, contractor: contractors.name, translatedHeader: devisTranslations.headerTranslated }).from(devis)
+    .innerJoin(contractors, eq(contractors.id, devis.contractorId))
+    .leftJoin(devisTranslations, eq(devisTranslations.devisId, devis.id))
+    .where(eq(devis.projectId, projectId)).orderBy(devis.id);
+  const result = await (lock ? query.for("share", { of: devis }) : query);
+  const rows = result.map(({ quotation, contractor, translatedHeader }) => {
+    const english = (translatedHeader as { description?: unknown } | null)?.description;
+    return { contractor, quotation: { ...quotation, descriptionUk: quotation.descriptionUk ||
+      (typeof english === "string" && english.trim() ? english : null) } };
+  });
   return { record: record ?? { revision: 0, entries: [] }, rows, readOnly: !!project.archivedAt || project.status === "archived" };
 }
 
@@ -134,7 +175,25 @@ export async function saveClientBudget(projectId: number, actorUserId: number, i
   await db.transaction(async tx => {
     const loaded = await loadBudget(projectId, tx as unknown as typeof db, true);
     const state = budgetState(loaded.record, loaded.rows, loaded.readOnly);
-    const entries = prepareBudgetEntries(state, input);
+    if (state.version !== input.version || state.readOnly)
+      throw new ClientBudgetError(409, "The project or budget changed. Refresh and review before saving.");
+    const receipts = new Map<number, NonNullable<ClientBudgetEntry["sourceReview"]>>();
+    for (const selection of input.entries.filter(entry => entry.reviewedTotals)) {
+      const d = loaded.rows.find(row => row.quotation.id === selection.devisId)?.quotation;
+      if (!d || !canReviewIndicative(d)) throw new ClientBudgetError(409, "This quotation cannot be shared as an indicative budget.");
+      let bytes: Buffer, pages: number;
+      try {
+        bytes = await getDocumentBuffer(d.pdfStorageKey!);
+        pages = (await PDFDocument.load(bytes)).getPageCount();
+      } catch {
+        throw new ClientBudgetError(503, "The original PDF could not be opened. No budget amounts were saved. Restore access to the original and retry.");
+      }
+      const page = selection.reviewedTotals!.pdfPage;
+      if (!Number.isSafeInteger(page) || page < 1 || page > pages)
+        throw new ClientBudgetError(400, "Choose the page containing the totals in the original PDF.");
+      receipts.set(d.id, { digest: createHash("sha256").update(bytes).digest("hex"), page, sourceKeyHash: keyHash(d.pdfStorageKey!) });
+    }
+    const entries = prepareBudgetEntries(state, input, receipts);
     await tx.insert(clientProjectBudgets).values({ projectId, entries, revision: loaded.record.revision + 1 })
       .onConflictDoUpdate({ target: clientProjectBudgets.projectId, set: { entries, revision: loaded.record.revision + 1, updatedAt: new Date() } });
     await tx.insert(clientProjectShareAudit).values({

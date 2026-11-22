@@ -246,9 +246,9 @@ export function QuotationExtractionReview({
       <div className="review-source-descriptions">
         <h3>Review &amp; corrections</h3>
         <div className="review-source-description"><Pencil size={15} /><div><h4>Architect’s working version</h4>
-          <p>Review/edit the working quotation to record audited human corrections to descriptions, translations and figures. The original PDF is unchanged.</p></div></div>
+          <p>Draft wording and context now, even when extraction or figures are incomplete. Use the header or a context-only row; save without inventing charges. In Edit working quotation, optionally compare recovered content and copy only selected French wording. Financial changes still need source reconciliation. The original PDF is unchanged.</p></div></div>
         <div className="review-source-description"><ClipboardCheck size={15} /><div><h4>Extraction accuracy</h4>
-          <p>Use the existing source transcription control to restore missing or misread source text. “Corrected” records an outcome only. Prepare re-extraction creates a separate candidate for review; it does not apply changes automatically.</p></div></div>
+          <p>Use the existing source transcription control to restore missing or misread source text. “Corrected” records an outcome only. Prepare re-extraction creates a separate candidate for comparison, even after human edits; it does not apply changes automatically. Full replacement remains blocked when human edits need preserving. Use the working editor’s recovered-content comparison for wording-only incorporation.</p></div></div>
         {review.data && <div className="review-source-statusline">
           <span>{candidatePending ? `Candidate pending · attempt ${candidateAttemptId}` :
             appliedAttemptId !== null ? `Candidate applied · attempt ${appliedAttemptId}` : "No prepared candidate"}</span>

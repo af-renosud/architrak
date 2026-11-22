@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import pg from "pg";
 import { PDFDocument } from "pdf-lib";
@@ -110,6 +110,24 @@ suite("architect correction real PostgreSQL transactions (isolated schema)", () 
     expect((await pool.query("SELECT before_snapshot,after_snapshot FROM quotation_architect_audit WHERE devis_id=$1", [quoteId])).rows[0].before_snapshot.lines).toHaveLength(3);
     const reload = await current();
     expect(reload.draft.headerEn).toBe("Human English"); expect(reload.draft.explanationFr).toBe("Contexte FR");
+  });
+  it("selectively saves recovered wording with provenance without changing row identities or figures", async () => {
+    await pool.query(`CREATE TABLE IF NOT EXISTS quotation_extraction_events(
+      id serial PRIMARY KEY,devis_id integer,kind text,outcome text,snapshot jsonb)`);
+    const digest = createHash("sha256").update(source).digest("hex");
+    const candidate = (await pool.query(`INSERT INTO quotation_extraction_events(devis_id,kind,outcome,snapshot)
+      VALUES($1,'attempt','prepared',$2) RETURNING id`, [quoteId, JSON.stringify({ sourceDigest: digest })])).rows[0];
+    const before = await current();
+    const after = await save(draft => {
+      draft.lines[0].descriptionFr += " Recovered source qualification.";
+      draft.recoverySource = { attemptId: candidate.id, sourceDigest: digest };
+    });
+    expect(after.draft.lines.map(line => line.id)).toEqual(before.draft.lines.map(line => line.id));
+    expect(after.draft.lines[0].totalHt).toBe(before.draft.lines[0].totalHt);
+    expect(after.draft.lines[0].descriptionEn).toBe(before.draft.lines[0].descriptionEn);
+    expect(after.draft.recoverySource?.attemptId).toBe(candidate.id);
+    await expect(save(draft => { draft.recoverySource = { attemptId: candidate.id, sourceDigest: "a".repeat(64) }; }))
+      .rejects.toThrow("different original PDF");
   });
   it("creates immutable independently human-transcribed PDF digest baseline, not mutable header totals or bad OCR", async () => {
     const result = await confirm("4963.87");

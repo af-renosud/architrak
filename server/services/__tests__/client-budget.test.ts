@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 vi.mock("../../db", () => ({ db: {} }));
 vi.mock("../financial-summary.service", () => ({ getProjectFinancialSummary: vi.fn() }));
 import { budgetCents, budgetState, prepareBudgetEntries, publicBudget } from "../client-budget";
@@ -10,6 +11,27 @@ const d = (id: number, patch: Partial<Devis> = {}) => ({
   descriptionFr: "Description", descriptionUk: "English title", amountHt: "100.00", amountTtc: "120.00",
   status: "pending", accountingState: "active", signOffStage: "received", ...patch,
 } as Devis);
+it("shares only explicitly reviewed source totals for an incomplete draft, never its placeholder figures", () => {
+  const quotation = d(51, { accountingState: "provisional", pdfStorageKey: "fixture.pdf",
+    amountHt: "0", amountTtc: "0", manualIntakeReviewRequired: true, aiExtractedData: {} });
+  const rows = [{ quotation, contractor: "Fixture contractor" }];
+  const state = budgetState({ revision: 0, entries: [] }, rows, false);
+  const input: ClientBudgetSave = { version: state.version, alternativesReviewed: true, entries: [{
+    devisId: 51, title: "Indicative roofing", refresh: true,
+    reviewedTotals: { amountHt: "1000.00", amountTtc: "1100.00", pdfPage: 2, confirmedFromPdf: true },
+  }] };
+  expect(() => prepareBudgetEntries(state, input)).toThrow("original quotation");
+  const entries = prepareBudgetEntries(state, input, new Map([[51, {
+    digest: "a".repeat(64), page: 2, sourceKeyHash: createHash("sha256").update("fixture.pdf").digest("hex"),
+  }]]));
+  const result = publicBudget({ revision: 1, entries }, rows);
+  expect(result.unsignedTtc).toBe(1100);
+  expect(result.entries[0]).toMatchObject({ basis: "reviewed_source_total", amountTtc: "1100.00" });
+  expect(result.entries[0]).not.toHaveProperty("sourceReview");
+  expect(quotation.amountTtc).toBe("0");
+  expect(publicBudget({ revision: 1, entries }, [{ ...rows[0], quotation: { ...quotation, status: "void" } }]).entries).toEqual([]);
+  expect(publicBudget({ revision: 1, entries }, [{ ...rows[0], quotation: { ...quotation, pdfStorageKey: "replacement.pdf" } }]).entries).toEqual([]);
+});
 const source = (quotation: Devis) => ({ quotation, contractor: "Contractor" });
 const entry: ClientBudgetEntry = { devisId: 1, title: "Reviewed public title", reference: "REF1", contractor: "Contractor", amountHt: "90.00", amountTtc: "108.00" };
 const record = { revision: 1, entries: [entry] };

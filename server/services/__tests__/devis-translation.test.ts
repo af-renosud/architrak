@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+vi.mock("../quotation-approval-guard", () => ({
+  quotationActionDecision: vi.fn(async () => ({ allowed: true, issues: [] })),
+}));
 vi.mock("../architect-quotation-correction", () => ({
   hasQuotationSourceBaseline: vi.fn(async () => false), hasArchitectCorrection: vi.fn(async () => false), architectFinancialBoundary: vi.fn(async () => null),
 }));
@@ -48,7 +51,7 @@ vi.mock("openai", () => {
 });
 
 import { storage } from "../../storage";
-import { translateDevis, retranslateSingleLine } from "../devis-translation";
+import { translateDevis, retranslateSingleLine, suggestArchitectTranslation } from "../devis-translation";
 
 const getDevis = storage.getDevis as unknown as ReturnType<typeof vi.fn>;
 const getDevisTranslation = storage.getDevisTranslation as unknown as ReturnType<typeof vi.fn>;
@@ -88,8 +91,15 @@ describe("translateDevis", () => {
     upsertDevisTranslation.mockResolvedValue({});
     updateDevisTranslation.mockResolvedValue({});
   });
+  it("refuses empty or incomplete suggestions rather than reporting a successful empty translation", async () => {
+    await expect(suggestArchitectTranslation({ headerFr: "", lines: [] } as any)).rejects.toThrow("Add French wording");
+    getAiModelSetting.mockResolvedValue({ provider: "gemini", modelId: "test" });
+    generateContentMock.mockResolvedValue(geminiResponse({ header: { description: "" }, lines: [] }));
+    await expect(suggestArchitectTranslation({ headerFr: "Toiture", lines: [] } as any)).rejects.toThrow("incomplete");
+  });
 
   it.each(["gemini", "openai"])("formats %s full and single-line translations before saving", async (provider) => {
+    getDevisLineItems.mockResolvedValue([baseLines[0]]);
     const payload = {
       header: { description: "Joinery:\nFrames\nGlazing" },
       lines: [{ lineNumber: 1, originalDescription: "Cadres\nVitrage", translation: "Frames\nGlazing" }],
@@ -214,11 +224,9 @@ describe("translateDevis", () => {
 
     const result = await translateDevis(42);
 
-    // Only line 1 came back from the model; user-edited line 2 must NOT survive
-    // because translateDevis (non-force) merges from the model output, not from
-    // the previous list. This test pins the actual behavior so future changes
-    // are intentional.
-    expect(result.translation.lines).toHaveLength(1);
+    // Incomplete model output must never silently delete saved manual wording.
+    expect(result.translation.lines).toHaveLength(2);
+    expect(result.translation.lines[1].translation).toBe("Edited by user");
     expect(result.translation.lines[0]).toMatchObject({
       lineNumber: 1,
       translation: "Fresh translation 1",

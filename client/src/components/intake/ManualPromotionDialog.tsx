@@ -78,9 +78,9 @@ export function ManualPromotionDialog({ source, onClose }: { source: ManualPromo
     <Dialog open onOpenChange={(open) => { if (!open && !mutation.isPending) onClose(); }}>
       <DialogContent data-testid="dialog-manual-promotion" className="max-w-lg">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2"><AlertTriangle size={17} className="text-amber-600" />Submit anyway</DialogTitle>
+          <DialogTitle className="flex items-center gap-2"><AlertTriangle size={17} className="text-amber-600" />{kind === "devis" ? "Register quotation draft" : "Submit anyway"}</DialogTitle>
           <DialogDescription>
-            This deliberate override creates an incomplete draft for normal review. It never approves or pays anything.
+            {kind === "devis" ? "Incomplete extraction does not prevent drafting. Register this PDF, then prepare wording and context; financial checks and source reconciliation come later. This creates only a draft, not approval or client publication." : "This deliberate override creates an incomplete draft for normal review. It never approves or pays anything."}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -94,9 +94,9 @@ export function ManualPromotionDialog({ source, onClose }: { source: ManualPromo
             </div>
           </div>
           <div className="grid gap-2">
-            <Label>Promote as</Label>
+            <Label>Register as</Label>
             <div className="grid grid-cols-2 gap-2" role="group" aria-label="Promotion kind">
-              <Button type="button" variant={kind === "devis" ? "default" : "outline"} onClick={() => setKind("devis")} data-testid="button-manual-promotion-kind-devis">Devis</Button>
+              <Button type="button" variant={kind === "devis" ? "default" : "outline"} onClick={() => setKind("devis")} data-testid="button-manual-promotion-kind-devis">Quotation draft</Button>
               <Button type="button" variant={kind === "invoice" ? "default" : "outline"} onClick={() => setKind("invoice")} data-testid="button-manual-promotion-kind-invoice">Facture</Button>
             </div>
           </div>
@@ -131,7 +131,7 @@ export function ManualPromotionDialog({ source, onClose }: { source: ManualPromo
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={mutation.isPending}>Cancel</Button>
           <Button onClick={() => mutation.mutate()} disabled={!canSubmit || mutation.isPending} data-testid="button-manual-promotion-submit">
-            {mutation.isPending ? "Submitting…" : "Submit anyway"}
+            {mutation.isPending ? "Submitting…" : kind === "devis" ? "Register quotation draft" : "Submit anyway"}
           </Button>
         </DialogFooter>
       </DialogContent>

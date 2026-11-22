@@ -3,7 +3,7 @@ import type { QuotationIssue } from "@shared/quotation-decision";
 /** These evidence gaps can be resolved by an independently confirmed source.
  * Missing/unreadable or changed PDF bytes cannot be repaired by typing a total. */
 export function needsSourceConfirmation(code?: string): boolean {
-  return ["SOURCE_CONFIRMATION_REQUIRED", "DESCRIPTION_CHARGE_UNVERIFIED", "COVERAGE_INCOMPLETE",
+  return ["FIGURES_UNAVAILABLE", "SOURCE_CONFIRMATION_REQUIRED", "DESCRIPTION_CHARGE_UNVERIFIED", "COVERAGE_INCOMPLETE",
     "SOURCE_RECEIPT_OUTDATED", "SOURCE_ROWS_CHANGED", "SOURCE_INVENTORY_CHANGED",
     "PAGES_NOT_EXTRACTED", "PAGE_ITEMS_MISSING"].includes(code ?? "");
 }

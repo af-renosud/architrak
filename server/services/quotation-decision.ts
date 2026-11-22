@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { quotationIssue, type QuotationAction, type QuotationDecision, type QuotationIssue } from "@shared/quotation-decision";
+import { quotationIssue, quotationLifecycleIssues, type QuotationAction, type QuotationDecision, type QuotationIssue } from "@shared/quotation-decision";
 import { quotationFinancialIssues } from "@shared/quotation-financial-decision";
 import { getDocumentBuffer } from "../storage/object-storage";
 import { pricedEvidenceIssues, workingCoverageIssues } from "./quotation-source-evidence";
@@ -8,6 +8,7 @@ import { quotationDecisionVersion, quotationPackageVersion, type QuotationDecisi
 import { quotationSigningIssues } from "@shared/quotation-signing-decision";
 import { checkExtractionCompleteness } from "./extraction-completeness";
 import { translationSnapshotIssues } from "./quotation-translation-coverage";
+import { quotationAmountsUnavailable } from "@shared/quotation-amount-availability";
 
 /** Authoritative source/review rules, independent of transport and UI.
  * Delivery-specific insurance, recipients and question authorisations remain
@@ -15,17 +16,38 @@ import { translationSnapshotIssues } from "./quotation-translation-coverage";
 export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, action: QuotationAction,
   readPdf = getDocumentBuffer, options: { verifySourceBytes?: boolean } = {}): Promise<QuotationDecision> {
   const { quotation: d, translation: t } = s;
-  const issues: QuotationIssue[] = [];
+  const issues: QuotationIssue[] = quotationLifecycleIssues(d, action, s.archived);
   const add = (code: string, message: string, section: QuotationIssue["target"]["section"]) => issues.push(quotationIssue(code, message, section));
-  if (s.archived) add("PROJECT_ARCHIVED", "Archived projects are read-only.", "lifecycle");
-  if (d.accountingState === "superseded") add("QUOTATION_REPLACED", "This quotation has been replaced. Open its replacement.", "lifecycle");
-  if (["void", "cancelled"].includes(d.status) || d.signOffStage === "void") add("QUOTATION_VOID", "This quotation has been cancelled.", "lifecycle");
   const version = quotationDecisionVersion(s);
   const result = () => ({ action, version, contentVersion: quotationPackageVersion(s), allowed: !issues.some(i => i.severity === "blocker"), issues });
   if (action === "save_content") return result(); // Financial incompleteness cannot veto wording.
+  if (["register", "indicative_budget"].includes(action)) {
+    return result(); // Budget disclosure has its own explicit, source-linked snapshot confirmation.
+  }
+  if (action === "prepare_translation") {
+    const header = d.descriptionFr?.trim().toLowerCase();
+    const filenameOnly = d.manualIntakeReviewRequired && !s.hasCorrection &&
+      [d.pdfFileName, d.devisCode].some(value => value?.trim().toLowerCase() === header);
+    if (!s.lines.some(line => line.description?.trim()) && (!header || filenameOnly))
+      add("WORDING_MISSING", "Add the French description in Edit working quotation, then prepare its English wording. Figures can be completed later.", "translation");
+    return result();
+  }
+  const extractionTotals = d.aiExtractedData as { amountHt?: unknown; amountTtc?: unknown } | null;
+  if (!s.baseline && (quotationAmountsUnavailable(d) || d.manualIntakeReviewRequired &&
+      (extractionTotals?.amountHt == null || extractionTotals?.amountTtc == null)))
+    add("FIGURES_UNAVAILABLE", "The quotation totals could not be read. You can still edit wording and context or review an indicative budget. Before approval or signing, compare and confirm the figures in Edit working quotation.", "source");
   const reviewing = action === "approve";
   if (reviewing && (!t || !["draft", "edited", "finalised"].includes(t.status)))
     add("TRANSLATION_MISSING", "Prepare and save the English translation before approval.", "translation");
+  if (reviewing && t) {
+    const translatedLines = Array.isArray(t.lineTranslations) ? t.lineTranslations : [];
+    const header = t.headerTranslated as { description?: string } | null;
+    if ((d.descriptionFr?.trim() && !header?.description?.trim()) ||
+        s.lines.some(line => line.description.trim() && !translatedLines.some((target: any) =>
+          target.lineNumber === line.lineNumber && typeof target.translation === "string" && target.translation.trim())) ||
+        (!header?.description?.trim() && !translatedLines.some((target: any) => target.translation?.trim())))
+      add("TRANSLATION_INCOMPLETE", "Some English wording is missing. Fill the empty English fields in Edit working quotation, then save before approval.", "translation");
+  }
   const humanReviewed = t?.status === "finalised" && (t.headerTranslated as { humanReviewed?: boolean } | null)?.humanReviewed;
   if (s.baseline || action === "save_financial") {
     issues.push(...quotationFinancialIssues(s.draft, s.baseline, action === "save_financial" ? undefined : { ht: d.amountHt, ttc: d.amountTtc }));
@@ -77,7 +99,7 @@ export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, ac
   }
   // Any route into human source confirmation should reveal known financial gaps
   // before that confirmation, not spring a second checklist on the operator.
-  if (!s.baseline && issues.some(issue => ["SOURCE_CONFIRMATION_REQUIRED", "DESCRIPTION_CHARGE_UNVERIFIED",
+  if (!s.baseline && issues.some(issue => ["FIGURES_UNAVAILABLE", "SOURCE_CONFIRMATION_REQUIRED", "DESCRIPTION_CHARGE_UNVERIFIED",
     "COVERAGE_INCOMPLETE", "SOURCE_RECEIPT_OUTDATED", "SOURCE_ROWS_CHANGED", "SOURCE_INVENTORY_CHANGED",
     "PAGES_NOT_EXTRACTED", "PAGE_ITEMS_MISSING"].includes(issue.code))) {
     issues.push(...quotationFinancialIssues(s.draft, null).filter(issue => issue.code !== "SOURCE_CONFIRMATION_REQUIRED"

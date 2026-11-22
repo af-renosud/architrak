@@ -14,7 +14,7 @@ export function mergeQuotationDraft(base: ArchitectCorrectionDraft, mine: Archit
     return choices[key] === "mine" ? m : l;
   };
   const draft = { ...latest, lines: [] } as ArchitectCorrectionDraft;
-  for (const key of Object.keys(latest) as Array<keyof ArchitectCorrectionDraft>) {
+  for (const key of Array.from(new Set([...Object.keys(base), ...Object.keys(mine), ...Object.keys(latest)])) as Array<keyof ArchitectCorrectionDraft>) {
     if (key !== "lines") (draft as unknown as Record<string, unknown>)[key] = pick(key, key, base[key], mine[key], latest[key]);
   }
   // Match newly persisted local keys by ID too, without ever transferring an ID between rows.

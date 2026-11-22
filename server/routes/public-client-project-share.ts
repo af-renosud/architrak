@@ -723,7 +723,8 @@ function renderBudget(b, f) {
     + '<div class="amount">' + escapeHtml(formatAmount(e.amountTtc, "TTC")) + '</div><div class="trade">'
     + escapeHtml(formatAmount(e.amountHt, "HT")) + '</div></div></div><div class="badges"><span class="badge '
     + (e.status === "signed" ? 'b-status-signed">Signed' : 'b-status-awaiting_signature">Under consideration — not signed')
-    + '</span></div></div>').join('');
+    + '</span></div>' + (e.basis === 'reviewed_source_total' && e.status !== 'signed'
+      ? '<p class="trade">Indicative total reviewed against the original PDF. Individual extracted items are not yet verified.</p>' : '') + '</div>').join('');
   return '<section class="fin" data-testid="section-developing-budget"><h2>Developing works budget</h2><div class="fin-kpis">'
     + kpi('Signed works', signedHt, signedTtc)
     + kpi('Under consideration', b.unsignedHt, b.unsignedTtc)

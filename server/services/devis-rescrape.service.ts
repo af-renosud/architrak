@@ -90,7 +90,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
       data: { message: "Devis not found", code: RESCRAPE_ERROR_CODES.DEVIS_NOT_FOUND },
     };
   }
-  if (await hasArchitectCorrection(devisId) || await hasQuotationSourceBaseline(devisId)) return { success: false, status: 409,
+  if (approval && (await hasArchitectCorrection(devisId) || await hasQuotationSourceBaseline(devisId))) return { success: false, status: 409,
     data: { message: "Architect corrections are protected. Re-scraping cannot replace this working version; use the correction editor." } };
   if (!initial.pdfStorageKey) {
     return {
@@ -219,7 +219,8 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
     ...validation.warnings.filter(w => w.field === "quotationContentCoverage" && w.severity === "error"),
   ];
   if (blockingCompleteness.length > 0) {
-    await eventWriter(devisId, "attempt", "failed", { warnings: blockingCompleteness, extraction: parsed, preparedFingerprint: beforeFingerprint });
+    await eventWriter(devisId, "attempt", "failed", { warnings: blockingCompleteness, extraction: parsed,
+      sourceDigest: createHash("sha256").update(buffer).digest("hex"), preparedFingerprint: beforeFingerprint });
     return {
       success: false,
       status: 422,

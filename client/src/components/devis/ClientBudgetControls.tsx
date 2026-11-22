@@ -9,7 +9,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 
-type DraftRow = { included: boolean; title: string; refresh: boolean };
+type ReviewedTotals = NonNullable<ClientBudgetSave["entries"][number]["reviewedTotals"]>;
+type DraftRow = { included: boolean; title: string; refresh: boolean; reviewing?: boolean; amountHt?: string; amountTtc?: string; pdfPage?: string; reviewedTotals?: ReviewedTotals };
 type Draft = Record<number, DraftRow>;
 type Focus = { devisId: number; included: boolean };
 
@@ -26,10 +27,37 @@ function initialDraft(state: ClientBudgetState, focus?: Focus): Draft {
 
 function chosenEntry(candidate: ClientBudgetCandidate, row: DraftRow): ClientBudgetEntry | null {
   if (candidate.signed) return candidate.current;
-  return row.refresh ? candidate.current : candidate.shared ?? candidate.current;
+  const base = candidate.shared ?? candidate.current;
+  if (row.refresh && row.reviewedTotals) return {
+    devisId: candidate.devisId, title: row.title, contractor: base?.contractor ?? "", reference: base?.reference ?? "",
+    amountHt: row.reviewedTotals.amountHt, amountTtc: row.reviewedTotals.amountTtc, basis: "reviewed_source_total",
+  };
+  return row.refresh ? candidate.figuresUnavailable ? null : candidate.current : candidate.shared ?? (candidate.figuresUnavailable ? null : candidate.current);
 }
 
-function Amounts({ ht, ttc }: { ht: number | string; ttc: number | string }) {
+function canReview(candidate: ClientBudgetCandidate) {
+  return !!candidate.canReviewIndicative && !candidate.signed && !candidate.excluded;
+}
+function originalPdfUrl(candidate: ClientBudgetCandidate) {
+  try {
+    const url = new URL(candidate.sourcePdfUrl ?? `/api/devis/${candidate.devisId}/pdf`, window.location.origin);
+    if (url.origin === window.location.origin && ["http:", "https:"].includes(url.protocol)) {
+      url.searchParams.set("variant", "original");
+      return `${url.pathname}${url.search}`;
+    }
+  } catch { /* Fall back to the authenticated original-document route. */ }
+  return `/api/devis/${candidate.devisId}/pdf?variant=original`;
+}
+function reviewValues(row: DraftRow): ReviewedTotals | null {
+  const ht = (row.amountHt ?? "").replace(/[ \u00a0\u202f]/g, "").replace(",", ".");
+  const ttc = (row.amountTtc ?? "").replace(/[ \u00a0\u202f]/g, "").replace(",", ".");
+  const page = Number(row.pdfPage);
+  return /^\d{1,10}(?:\.\d{1,2})?$/.test(ht) && /^\d{1,10}(?:\.\d{1,2})?$/.test(ttc)
+    && Number(ttc) >= Number(ht) && /^[1-9]\d*$/.test(row.pdfPage ?? "") && Number.isSafeInteger(page)
+    ? { amountHt: ht, amountTtc: ttc, pdfPage: page, confirmedFromPdf: true } : null;
+}
+function Amounts({ ht, ttc }: { ht: number | string | null; ttc: number | string | null }) {
+  if (ht == null || ttc == null || ht === "" || ttc === "" || !Number.isFinite(Number(ht)) || !Number.isFinite(Number(ttc))) return <span className="text-muted-foreground">Amounts unavailable</span>;
   return (
     <span className="inline-flex flex-wrap gap-x-3 gap-y-0.5 tabular-nums">
       <Amount value={Number(ht)} denomination="HT" />
@@ -165,9 +193,9 @@ export function ClientBudgetControls({
           <p id={`client-budget-note-${devisId}`} className={`max-w-sm text-[10px] ${candidate.shared && blocked ? "text-amber-800" : "text-muted-foreground"}`}>
             {readOnly ? "Read-only budget." : candidate.excluded ? "Inactive quotation — excluded from the client budget. A saved entry can be removed." : blocked ? `${candidate.blockedReason ?? "Current amounts unavailable."}${candidate.shared && !candidate.signed ? " Saved valid amounts remain shared; you can retain or remove them." : ""}` : candidate.shared ? `${candidate.signed ? "Signed amounts are live." : "Saved budget amounts."} Detailed publication is separate.` : "Costs only. Review and confirm before sharing."}
           </p>
-          {candidate.shared && (
+          {(candidate.shared || canReview(candidate)) && (
             <button type="button" className="text-[10px] underline underline-offset-2" onClick={() => start({ devisId, included: true })}>
-              {readOnly ? "View client budget" : "Review client budget"}
+              {readOnly ? "View client budget" : canReview(candidate) ? "Review PDF totals for indicative budget" : "Review client budget"}
             </button>
           )}
         </div>
@@ -266,8 +294,12 @@ function ClientBudgetEditor({
     const entry = chosenEntry(candidate, draft[candidate.devisId]);
     return { ht: total.ht + Number(entry?.amountHt ?? 0), ttc: total.ttc + Number(entry?.amountTtc ?? 0) };
   }, { ht: 0, ttc: 0 });
+  const unknownUnsigned = activeUnsigned.some(candidate => !chosenEntry(candidate, draft[candidate.devisId]));
   const invalid = selected.some((candidate) => !draft[candidate.devisId].title.trim()
-    || (!candidate.shared && (candidate.excluded || !!candidate.blockedReason || !candidate.current)));
+    || draft[candidate.devisId].reviewing
+    || (!candidate.shared && (candidate.excluded || !!candidate.blockedReason || !candidate.current || candidate.figuresUnavailable)
+      && !(canReview(candidate) && draft[candidate.devisId].reviewedTotals))
+    || (draft[candidate.devisId].refresh && !chosenEntry(candidate, draft[candidate.devisId])));
   const reload = async () => {
     if (!window.confirm("Reload the latest budget and discard your staged changes? Your draft will remain here if loading fails.")) return;
     setReloading(true);
@@ -293,8 +325,9 @@ function ClientBudgetEditor({
       {locked && <p role="status" className="rounded-lg border bg-muted/30 p-3">This project’s client budget is read-only. No changes can be saved.</p>}
       <section className="space-y-2 rounded-lg border border-[#c1a27b]/30 bg-[#c1a27b]/5 p-3" aria-label="Client budget total preview">
         <div className="flex flex-wrap justify-between gap-1"><span className="text-muted-foreground">Signed commitments</span><Amounts ht={snapshot.signedHt} ttc={snapshot.signedTtc} /></div>
-        <div className="flex flex-wrap justify-between gap-1"><span className="text-muted-foreground">Selected unsigned quotations</span><Amounts ht={unsigned.ht} ttc={unsigned.ttc} /></div>
-        <div className="flex flex-wrap justify-between gap-1 border-t border-[#c1a27b]/30 pt-2 font-semibold text-[#0B2545]"><span>Preview total</span><Amounts ht={snapshot.signedHt + unsigned.ht} ttc={snapshot.signedTtc + unsigned.ttc} /></div>
+        <div className="flex flex-wrap justify-between gap-1"><span className="text-muted-foreground">Selected unsigned quotations</span><Amounts ht={unknownUnsigned ? null : unsigned.ht} ttc={unknownUnsigned ? null : unsigned.ttc} /></div>
+        <div className="flex flex-wrap justify-between gap-1 border-t border-[#c1a27b]/30 pt-2 font-semibold text-[#0B2545]"><span>Preview total</span><Amounts ht={unknownUnsigned ? null : snapshot.signedHt + unsigned.ht} ttc={unknownUnsigned ? null : snapshot.signedTtc + unsigned.ttc} /></div>
+        {activeUnsigned.some(candidate => chosenEntry(candidate, draft[candidate.devisId])?.basis === "reviewed_source_total") && <p className="text-amber-900">Includes indicative PDF-reviewed totals — extraction not verified. Quotation figures and detailed sharing are unchanged.</p>}
         <p className="text-[10px] text-muted-foreground">Signed quotations use live authoritative amounts and count only in signed commitments, never twice. Lifecycle-inactive entries are excluded; valid saved unsigned amounts remain shared if current amounts need correction. HT excludes VAT; TTC includes VAT.</p>
       </section>
 
@@ -311,7 +344,7 @@ function ClientBudgetEditor({
       {review ? (
         <section className="space-y-3" aria-label="Confirm client budget">
           <h3 className="font-semibold text-[#0B2545]">Confirm what your client will see</h3>
-          <p className="text-muted-foreground">These are the exact selected titles and amounts. Unsigned amounts stay frozen unless you explicitly chose current amounts. Signed amounts are live; their public English title stays as saved.</p>
+          <p className="text-muted-foreground">These are the exact selected titles and amounts. Unsigned amounts stay frozen unless you explicitly chose current amounts or reviewed new PDF totals. Signed amounts are live; their public English title stays as saved.</p>
           {selected.length === 0 && <p className="rounded-lg border border-dashed p-4">No quotations selected. The unsigned client budget will be empty.</p>}
           {selected.map((candidate) => {
             const row = draft[candidate.devisId];
@@ -320,10 +353,11 @@ function ClientBudgetEditor({
               <div key={candidate.devisId} className="space-y-1 break-words rounded-lg border p-3">
                 <p className="font-semibold">{row.title.trim()}</p>
                 <p>{entry?.contractor || "No contractor"} · Ref: {entry?.reference || "—"}</p>
-                {entry && <Amounts ht={entry.amountHt} ttc={entry.amountTtc} />}
+                <Amounts ht={entry?.amountHt ?? null} ttc={entry?.amountTtc ?? null} />
+                {entry?.basis === "reviewed_source_total" && <p className="text-amber-900">Indicative · PDF totals reviewed · extraction not verified{row.reviewedTotals ? ` · page ${row.reviewedTotals.pdfPage}` : ""}. Budget only; quotation figures unchanged.</p>}
                 <p className="text-[10px] text-muted-foreground">{candidate.excluded ? "Inactive — excluded from the client budget" : candidate.signed ? "Signed — live amounts, already counted in signed commitments" : "Under consideration"}</p>
-                {!candidate.excluded && candidate.blockedReason && <p className="text-[10px] text-amber-800">{candidate.blockedReason}{!candidate.signed && candidate.shared ? " Saved valid amounts remain shared." : ""}</p>}
-                {row.refresh && !candidate.signed && <p className="text-[10px] text-muted-foreground">Current amounts will be shared on confirmation.</p>}
+                {!candidate.excluded && candidate.blockedReason && <p className="text-[10px] text-amber-800">{candidate.blockedReason}{!candidate.signed && candidate.shared && !row.refresh ? " Saved valid amounts remain shared." : ""}</p>}
+                {row.refresh && !candidate.signed && <p className="text-[10px] text-muted-foreground">{row.reviewedTotals ? "Reviewed PDF totals" : "Current amounts"} will be shared on confirmation.</p>}
               </div>
             );
           })}
@@ -347,28 +381,47 @@ function ClientBudgetEditor({
               return (
                 <div key={candidate.devisId} ref={candidate.devisId === focus?.devisId ? focusedRow : undefined} className={`space-y-2 rounded-lg border p-3 ${candidate.devisId === focus?.devisId ? "border-[#c1a27b] bg-[#c1a27b]/5" : ""}`}>
                   <label className="flex items-start gap-2 font-semibold">
-                    <input type="checkbox" checked={row.included} disabled={disabled || (blocked && !row.included)} onChange={(event) => update(candidate.devisId, { included: event.target.checked, refresh: event.target.checked && !candidate.shared ? true : row.refresh })} className="mt-0.5 h-4 w-4 shrink-0 accent-[#0B2545]" />
+                    <input type="checkbox" checked={row.included} disabled={disabled || (blocked && !row.included && !candidate.shared && !row.reviewedTotals)} onChange={(event) => update(candidate.devisId, { included: event.target.checked, refresh: event.target.checked && !candidate.shared ? true : row.refresh })} className="mt-0.5 h-4 w-4 shrink-0 accent-[#0B2545]" />
                     <span className="min-w-0 break-words">{(candidate.shared ?? candidate.current)?.title || `Quotation ${candidate.devisId}`} <span className="font-normal text-muted-foreground">· {candidate.signed ? "Signed" : "Unsigned"}</span></span>
                   </label>
                   <p className="break-words text-muted-foreground">{entry?.contractor || "No contractor"} · Ref: {entry?.reference || "—"}</p>
-                  {entry && <Amounts ht={entry.amountHt} ttc={entry.amountTtc} />}
-                  {blocked && <p className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900">{candidate.blockedReason ?? "Current quotation amounts are unavailable."} {candidate.excluded ? "Lifecycle-inactive quotation — excluded from the client budget. A saved entry can be removed." : candidate.shared && !candidate.signed ? "Saved valid amounts remain shared. Retain or remove them; current amounts cannot be used until corrected." : "Current amounts cannot be included or refreshed until resolved."}</p>}
+                  <Amounts ht={entry?.amountHt ?? null} ttc={entry?.amountTtc ?? null} />
+                  {entry?.basis === "reviewed_source_total" && <p className="text-amber-900">Indicative · PDF totals reviewed · extraction not verified. {row.refresh ? "New review staged." : "Saved snapshot retained unless explicitly refreshed."}</p>}
+                  {canReview(candidate) && <div className="space-y-2 rounded-md border border-[#c1a27b]/40 p-3">
+                    <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => update(candidate.devisId, { reviewing: !row.reviewing })}>{row.reviewing ? "Cancel PDF totals review" : "Review original PDF totals"}</Button>
+                    {row.reviewing && <>
+                      <p>For an indicative client budget only. This does not verify extraction, repair quotation figures or publish the PDF or context.</p>
+                      <a className="inline-block underline" href={originalPdfUrl(candidate)} target="_blank" rel="noopener noreferrer">Open original PDF</a>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        <label>Source total HT<Input inputMode="decimal" value={row.amountHt ?? ""} disabled={disabled} onChange={event => update(candidate.devisId, { amountHt: event.target.value, reviewedTotals: undefined })} /></label>
+                        <label>Source total TTC<Input inputMode="decimal" value={row.amountTtc ?? ""} disabled={disabled} onChange={event => update(candidate.devisId, { amountTtc: event.target.value, reviewedTotals: undefined })} /></label>
+                        <label>PDF page<Input inputMode="numeric" value={row.pdfPage ?? ""} disabled={disabled} onChange={event => update(candidate.devisId, { pdfPage: event.target.value, reviewedTotals: undefined })} /></label>
+                      </div>
+                      <p className="text-muted-foreground">Enter both non-negative totals (TTC at least HT) and the source page. Confirm only after checking the original PDF.</p>
+                      <Button type="button" size="sm" disabled={disabled || !reviewValues(row)} onClick={() => {
+                        const reviewedTotals = reviewValues(row);
+                        if (reviewedTotals) update(candidate.devisId, { reviewedTotals, refresh: true, included: true, reviewing: false });
+                      }}>I checked these totals against the PDF</Button>
+                    </>}
+                    {row.reviewedTotals && candidate.shared && <Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => update(candidate.devisId, { refresh: false, reviewedTotals: undefined, reviewing: false })}>Keep saved budget snapshot instead</Button>}
+                  </div>}
+                  {blocked && <p className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900">{candidate.blockedReason ?? "Current quotation amounts are unavailable."} {candidate.excluded ? "Lifecycle-inactive quotation — excluded from the client budget. A saved entry can be removed." : row.reviewedTotals ? "Reviewed PDF totals are staged for an indicative budget only; extraction remains unverified." : candidate.shared && !candidate.signed ? "Saved valid amounts remain shared. Retain or remove them; current amounts cannot be used until corrected." : "Current amounts cannot be included or refreshed until resolved."}</p>}
                   {row.included && (
                     <>
                       <label className="block space-y-1">
                         <span className="text-[11px] font-medium">Public English title <span className="text-muted-foreground">(required)</span></span>
-                        <Input value={row.title} required maxLength={500} disabled={disabled || blocked} aria-invalid={!row.title.trim()} onChange={(event) => update(candidate.devisId, { title: event.target.value })} className="h-8 text-xs" />
+                        <Input value={row.title} required maxLength={500} disabled={disabled || (blocked && !row.reviewedTotals && !candidate.shared)} aria-invalid={!row.title.trim()} onChange={(event) => update(candidate.devisId, { title: event.target.value })} className="h-8 text-xs" />
                       </label>
                       {!row.title.trim() && <p className="text-[11px] text-destructive">Enter an English title before saving.</p>}
                       {candidate.signed && <p className="text-[11px] text-muted-foreground">Signed amounts are live authoritative amounts, not a frozen snapshot. The public English title is saved separately.</p>}
                       {candidate.shared && !blocked && !candidate.signed && (
                         <div className="space-y-2 text-[11px]">
-                          <p className="text-muted-foreground">{row.refresh ? "Using current quotation amounts." : "Using saved client budget amounts."}{candidate.changed ? " The quotation has changed since it was shared." : ""}</p>
+                          <p className="text-muted-foreground">{row.refresh ? row.reviewedTotals ? "Using indicative reviewed PDF totals." : "Using current quotation amounts." : "Using saved client budget amounts."}{candidate.changed ? " The quotation has changed since it was shared." : ""}</p>
                           {candidate.changed && !row.refresh && <div className="rounded border border-dashed p-2"><p className="mb-1 text-muted-foreground">Current quotation · {candidate.current?.contractor} · Ref: {candidate.current?.reference}</p><Amounts ht={candidate.current!.amountHt} ttc={candidate.current!.amountTtc} /></div>}
-                          {(candidate.changed || row.refresh) && <Button type="button" variant="outline" size="sm" className="h-auto min-h-7 whitespace-normal py-1 text-[11px]" disabled={disabled} onClick={() => update(candidate.devisId, { refresh: !row.refresh })}>{row.refresh ? "Keep saved amounts instead" : "Update client budget to current amounts"}</Button>}
+                          {(candidate.changed || row.refresh) && <Button type="button" variant="outline" size="sm" className="h-auto min-h-7 whitespace-normal py-1 text-[11px]" disabled={disabled} onClick={() => update(candidate.devisId, { refresh: !row.refresh, reviewedTotals: undefined })}>{row.refresh ? "Keep saved amounts instead" : "Update client budget to current amounts"}</Button>}
                         </div>
                       )}
-                      {!candidate.shared && !candidate.signed && <p className="text-[10px] text-muted-foreground">New inclusion · current amounts will be shared after confirmation.</p>}
+                      {!candidate.shared && !candidate.signed && <p className="text-[10px] text-muted-foreground">New inclusion · {row.reviewedTotals ? "indicative reviewed PDF totals" : "current amounts"} will be shared after confirmation.</p>}
                     </>
                   )}
                 </div>
@@ -383,7 +436,7 @@ function ClientBudgetEditor({
         {!locked && (review ? (
           <Button type="button" size="sm" disabled={busy || conflict || invalid || !alternativesReviewed} onClick={() => save.mutate({
             version: snapshot.version,
-            entries: selected.map((candidate) => ({ devisId: candidate.devisId, title: draft[candidate.devisId].title.trim(), refresh: draft[candidate.devisId].refresh })),
+            entries: selected.map((candidate) => ({ devisId: candidate.devisId, title: draft[candidate.devisId].title.trim(), refresh: draft[candidate.devisId].refresh, ...(draft[candidate.devisId].refresh && draft[candidate.devisId].reviewedTotals ? { reviewedTotals: draft[candidate.devisId].reviewedTotals } : {}) })),
             alternativesReviewed: true,
           })}>{save.isPending ? "Saving…" : "Confirm and save client budget"}</Button>
         ) : <Button type="button" size="sm" disabled={busy || conflict || invalid} onClick={() => setReview(true)}>Review changes</Button>)}

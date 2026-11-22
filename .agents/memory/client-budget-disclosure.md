@@ -21,11 +21,17 @@ The client may see a developing works budget composed of signed commitments plus
 
 **How to apply:** Keep signed commitments and their invoicing/progress calculations unchanged. Never include project-wide unsigned prices by default. A budget selection is a separate disclosure authorisation, not a translation approval.
 
-Unsigned shared amounts remain the architect's saved snapshot until an explicit budget update. Signed selections move out of unsigned totals, avoiding double-counting. Void, provisional, superseded and declined quotations are excluded; replacements require fresh inclusion. Alternative quotations must not be summed as additional scope; require the architect to confirm the preferred option.
+Unsigned shared amounts remain the architect's saved snapshot until an explicit budget update. Signed selections move out of unsigned totals, avoiding double-counting. Void, superseded and declined quotations are excluded; replacements require fresh inclusion. Provisional quotations require a separate explicit original-PDF totals review before indicative budget disclosure; their placeholder figures must never be shared. Alternative quotations must not be summed as additional scope; require the architect to confirm the preferred option.
 
 **Why:** Routine extraction/editing must not silently change a figure the client is already using to understand their budget, and replacement or competing proposals must not inflate it.
 
 **How to apply:** Version and audit selection changes, retain prior amounts on unconfirmed edits, and explain that the indicative total is not a contract or necessarily the complete project cost. Selections are project-scoped and survive link rotation; link revocation still denies access to the whole portal.
+
+Indicative source-total review must remain separate from verified quotation figures and full-document publication.
+
+**Why:** The user authorised continuing budget development when extraction is incomplete, not waiving signature/payment safeguards or changing the original extraction.
+
+**How to apply:** Record explicit HT/TTC/page confirmation with source provenance in the budget snapshot and audit, never in the original model extraction. Label the totals indicative and individual items unverified.
 
 The user requires active signed quotations to appear automatically on the project client link, without a separate selection.
 
