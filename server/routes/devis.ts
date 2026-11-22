@@ -549,13 +549,12 @@ router.post(
     try {
       const devisId = Number(req.params.id);
       const existing = await storage.getDevis(devisId);
-      const sourceEvidence = existing?.aiExtractedData as { illustratedRecovery?: unknown; quotationVerification?: unknown } | null;
-      if (sourceEvidence?.illustratedRecovery || sourceEvidence?.quotationVerification) {
-        startQuotationRescrape(devisId);
-        return res.status(202).json({ pending: true, message: "Source extraction is running. Follow its result in Extraction review." });
-      }
-      const result = await rescrapeDevis(devisId);
-      res.status(result.status).json(result.data);
+      if (!existing) return res.status(404).json({ message: "Quotation not found." });
+      if (!existing.pdfStorageKey) return res.status(422).json({ message: "No original PDF is attached." });
+      const project = await storage.getProject(existing.projectId);
+      if (project?.archivedAt) return res.status(409).json({ message: "Archived projects are read-only." });
+      await startQuotationRescrape(devisId);
+      return res.status(202).json({ pending: true, message: "Extraction queued. You can continue working." });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("[Devis Rescrape] Error:", message);

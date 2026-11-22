@@ -4,7 +4,7 @@ import { pool } from "../db";
 import { requireAuth } from "../auth/middleware";
 import { storage } from "../storage";
 import { rescrapeDevis } from "../services/devis-rescrape.service";
-import { isQuotationRescrapeRunning } from "../services/quotation-rescrape-jobs";
+import { isQuotationRescrapeRunning, quotationRescrapeStatus } from "../services/quotation-rescrape-jobs";
 import { hasArchitectCorrection } from "../services/architect-quotation-correction";
 import { loadQuotationDecisionSnapshot } from "../services/quotation-decision-snapshot";
 import { quotationExceptionReview } from "../services/quotation-exceptions";
@@ -21,7 +21,7 @@ router.get("/api/devis/:id/extraction-review", requireAuth, async (req, res, nex
     const id = z.coerce.number().int().positive().parse(req.params.id);
     const quotation = await storage.getDevis(id);
     if (!quotation) return res.status(404).json({ message: "Quotation not found" });
-    const { rows } = await pool.query(`SELECT id,created_at,kind,outcome,category,reason,effort_minutes
+    const { rows } = await pool.query(`SELECT id,created_at,kind,outcome,category,reason,effort_minutes,snapshot->'diagnostic' AS diagnostic
       FROM quotation_extraction_events WHERE devis_id=$1 ORDER BY id DESC LIMIT 200`, [id]);
     const { rows: candidates } = await pool.query(`SELECT id,snapshot FROM quotation_extraction_events
       WHERE devis_id=$1 AND kind='attempt' AND outcome IN ('failed','prepared') AND snapshot ? 'extraction'
@@ -31,7 +31,7 @@ router.get("/api/devis/:id/extraction-review", requireAuth, async (req, res, nex
       ORDER BY id DESC LIMIT 1`, [id]);
     const snapshot = await loadQuotationDecisionSnapshot(id);
     res.json({ exceptionReview: snapshot ? await quotationExceptionReview(snapshot) : null,
-      events: rows, running: isQuotationRescrapeRunning(id), candidateAttemptId: candidates[0]?.id ?? null,
+      events: rows, running: await isQuotationRescrapeRunning(id), job: await quotationRescrapeStatus(id), candidateAttemptId: candidates[0]?.id ?? null,
       humanWorkingVersion: await hasArchitectCorrection(id),
       evidence: candidates[0]?.snapshot?.extraction ?? quotation.aiExtractedData,
       sourcePdfUrl: `/api/devis/${id}/pdf?variant=original` });

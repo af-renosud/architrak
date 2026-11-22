@@ -2135,6 +2135,15 @@ export const INTAKE_JOB_STATES = [
 ] as const;
 export type IntakeJobState = (typeof INTAKE_JOB_STATES)[number];
 
+export const quotationRescrapeJobs = pgTable("quotation_rescrape_jobs", {
+  devisId: integer("devis_id").primaryKey().references(() => devis.id, { onDelete: "cascade" }),
+  state: text("state").notNull().default("pending"),
+  owner: text("owner"),
+  attempts: integer("attempts").notNull().default(0),
+  message: text("message"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const intakeJobs = pgTable("intake_jobs", {
   id: serial("id").primaryKey(),
   intakeDocumentId: integer("intake_document_id")

@@ -30,11 +30,13 @@ export interface ExtractionReviewEvent {
   category: string | null;
   reason: string | null;
   effort_minutes: number | null;
+  diagnostic?: { code: string; stage: string; chunk?: number; message: string } | null;
 }
 export interface ExtractionReviewResponse {
   exceptionReview?: QuotationExceptionReview;
   humanWorkingVersion?: boolean;
   running?: boolean;
+  job?: { state: string; message?: string | null } | null;
   events: ExtractionReviewEvent[];
   evidence: unknown;
   sourcePdfUrl: string;

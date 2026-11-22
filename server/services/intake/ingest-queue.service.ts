@@ -34,6 +34,7 @@
  */
 
 import crypto from "crypto";
+import { assertIntakeWorkerAlive, withIntakeWorkerLock } from "./worker-lock";
 import { storage } from "../../storage";
 import { db } from "../../db";
 import { getDocumentBuffer } from "../../storage/object-storage";
@@ -200,25 +201,11 @@ function computeContentHash(parsed: ParsedDocument): string | null {
  * later doc always sees the earlier one's committed `analyzed` state.
  * Cross-project work still runs in parallel.
  *
- * This is a single-process, in-memory lock — sufficient because the
- * sweeper and inline attempts all run in this one Node process (same
- * model as the drive_uploads / pennylane sweepers). A multi-instance
- * deployment would need a DB-level guard instead.
+ * A database session lock serialises deduplication and routing across
+ * application instances, not just within one Node process.
  */
-const projectChains = new Map<number, Promise<void>>();
-function withProjectLock<T>(projectId: number, fn: () => Promise<T>): Promise<T> {
-  const prev = projectChains.get(projectId) ?? Promise.resolve();
-  const run = prev.then(fn, fn);
-  // Keep the chain alive but never let it reject, so the next waiter
-  // always resumes regardless of this attempt's outcome.
-  projectChains.set(
-    projectId,
-    run.then(
-      () => {},
-      () => {},
-    ),
-  );
-  return run;
+function withProjectLock<T>(projectId: number, fn: () => Promise<T>): Promise<T | undefined> {
+  return withIntakeWorkerLock(projectId, fn, 850, true);
 }
 
 /**
@@ -227,6 +214,9 @@ function withProjectLock<T>(projectId: number, fn: () => Promise<T>): Promise<T>
  * place. Safe to call concurrently — the claim UPDATE is the lock.
  */
 export async function attemptIntakeJob(jobId: number): Promise<void> {
+  await withIntakeWorkerLock(jobId, () => attemptOwnedIntakeJob(jobId));
+}
+async function attemptOwnedIntakeJob(jobId: number): Promise<void> {
   const claimed = await storage.claimIntakeJobForAttempt(jobId);
   if (!claimed) return; // someone else grabbed it / already terminal
 
@@ -234,8 +224,10 @@ export async function attemptIntakeJob(jobId: number): Promise<void> {
   const attemptNum = row.attempts + 1;
   try {
     await runPipeline(row.intakeDocumentId);
-    await storage.markIntakeJobSucceeded({ jobId: row.id, attempts: attemptNum });
+    await assertIntakeWorkerAlive();
+    await storage.markIntakeJobSucceeded({ jobId: row.id, attempts: attemptNum, claimedAt: row.lastAttemptAt! });
   } catch (err) {
+    await assertIntakeWorkerAlive();
     const transient = err instanceof TransientIntakeError;
     const message = err instanceof Error ? err.message : String(err);
     const exhausted = attemptNum >= MAX_INTAKE_ATTEMPTS;
@@ -245,6 +237,7 @@ export async function attemptIntakeJob(jobId: number): Promise<void> {
       // sees a terminal state instead of a perpetual "analyzing".
       await storage.markIntakeJobDeadLettered({
         jobId: row.id,
+        claimedAt: row.lastAttemptAt!,
         attempts: attemptNum,
         lastError: message.slice(0, 1000),
       });
@@ -272,6 +265,7 @@ export async function attemptIntakeJob(jobId: number): Promise<void> {
     const wait = BACKOFF_MS[Math.min(attemptNum - 1, BACKOFF_MS.length - 1)];
     await storage.markIntakeJobPendingRetry({
       jobId: row.id,
+      claimedAt: row.lastAttemptAt!,
       attempts: attemptNum,
       lastError: message.slice(0, 1000),
       nextAttemptAt: new Date(Date.now() + wait),
@@ -406,6 +400,7 @@ async function runPipeline(intakeDocumentId: number): Promise<void> {
         : await parseDocument(buffer, doc.fileName);
     }
 
+    await assertIntakeWorkerAlive();
     // Task #425 — deterministic firm-identity gate BEFORE dedup/routing.
     // Rewrites documentType in place so the firm's own honoraires invoices
     // (architect_fee_invoice) never reach the contractor devis/invoice

@@ -191,7 +191,7 @@ describe("parseDocument retry & fallback", () => {
     expect(result).toEqual(successDoc);
   });
 
-  it("preserves the final error message when both Gemini and OpenAI fail", async () => {
+  it("preserves a safe final failure category when both providers fail", async () => {
     const parseWithGemini = vi
       .fn<(images: Buffer[], modelId: string) => Promise<ParsedDocument>>()
       .mockRejectedValue(new Error("[503 Service Unavailable] Gemini overloaded"));
@@ -207,7 +207,8 @@ describe("parseDocument retry & fallback", () => {
 
     expect(result.documentType).toBe("unknown");
     // Final cause is the OpenAI error (502), not the Gemini one (503).
-    expect(result.rawText).toBe("Parse failed (transient): [502 Bad Gateway] OpenAI");
+    expect(result.extractionFailure?.code).toBe("provider_unavailable");
+    expect(result.rawText).not.toContain("[502");
     expect(isTransientParseFailure(result)).toBe(true);
   });
 
@@ -225,7 +226,7 @@ describe("parseDocument retry & fallback", () => {
 
     expect(parseWithOpenAI).not.toHaveBeenCalled();
     expect(result.documentType).toBe("unknown");
-    expect(result.rawText).toBe("Parse failed: [400 Bad Request] image too large");
+    expect(result.extractionFailure?.code).toBe("provider_input");
     expect(isTransientParseFailure(result)).toBe(false);
   });
 
@@ -243,7 +244,7 @@ describe("parseDocument retry & fallback", () => {
       parseWithOpenAI,
     });
 
-    expect(result.rawText).toBe("Parse failed: [401 Unauthorized] Invalid OpenAI key");
+    expect(result.extractionFailure?.code).toBe("provider_access");
     expect(isTransientParseFailure(result)).toBe(false);
   });
 
@@ -262,7 +263,7 @@ describe("parseDocument retry & fallback", () => {
     });
 
     expect(parseWithOpenAI).not.toHaveBeenCalled();
-    expect(result.rawText).toBe("Parse failed (transient): [503 Service Unavailable] Gemini");
+    expect(result.extractionFailure?.code).toBe("provider_unavailable");
     expect(isTransientParseFailure(result)).toBe(true);
   });
 

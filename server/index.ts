@@ -235,6 +235,8 @@ app.use((req, res, next) => {
   try {
     const { startIntakeJobSweeper } = await import("./services/intake/ingest-queue.service");
     startIntakeJobSweeper();
+    const { startQuotationRescrapeSweeper } = await import("./services/quotation-rescrape-jobs");
+    startQuotationRescrapeSweeper();
   } catch (err) {
     console.error("[IntakeQueue] failed to start sweeper:", err);
   }

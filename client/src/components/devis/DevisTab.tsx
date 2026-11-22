@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { quotationAmountsUnavailable } from "@shared/quotation-amount-availability";
 import "./quotation-list-layout.css";
 import { ProjectLinkEmail } from "./ProjectLinkEmail";
 import type { QuotationReplacementHistory as ReplacementHistoryEntry } from "@shared/quotation-replacement";
@@ -1189,10 +1190,10 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
           </div>
           <div className="ml-[4.625rem] sm:ml-0 sm:col-start-2 sm:row-start-1 sm:min-w-[10rem] sm:pl-4 sm:border-l-2 border-[#0B2545]/20 sm:text-right tabular-nums">
             <div className="text-[18px] font-black tracking-tight leading-none text-[#0B2545]" data-testid={`text-devis-ttc-${d.id}`}>
-              <Amount value={parseFloat(d.amountTtc)} denomination="TTC" />
+              {quotationAmountsUnavailable(d) ? <span className="text-sm">Figures unavailable</span> : <Amount value={parseFloat(d.amountTtc)} denomination="TTC" />}
             </div>
             <span className="text-[10px] text-muted-foreground" data-testid={`text-devis-ht-${d.id}`}>
-              <Amount value={parseFloat(d.amountHt)} denomination="HT" />
+              {quotationAmountsUnavailable(d) ? "Re-extract or review the original PDF" : <Amount value={parseFloat(d.amountHt)} denomination="HT" />}
             </span>
           </div>
           <TooltipProvider delayDuration={200}>
@@ -1747,6 +1748,7 @@ export function DevisTab({
 
   const activeDevis = devisList?.filter(d => d.status !== "void") ?? [];
   const totalDevisCount = activeDevis.length;
+  const unavailableFigureCount = activeDevis.filter(quotationAmountsUnavailable).length;
   const totalAmountTtc = activeDevis.reduce((sum, d) => sum + parseFloat(d.amountTtc?.toString() ?? "0"), 0);
   const totalAmountHt = activeDevis.reduce((sum, d) => sum + parseFloat(d.amountHt?.toString() ?? "0"), 0);
   const { pendingDevisCount, signedDevisCount } = countDevisSignOff(activeDevis);
@@ -1829,7 +1831,7 @@ export function DevisTab({
     <div className="space-y-4">
       <div className="devis-summary-strip" aria-label="Quotation summary">
         <span data-testid="card-devis-count"><strong data-testid="text-devis-count">{totalDevisCount}</strong> quotations</span>
-        <span data-testid="card-devis-total">Quoted · <strong><Amount value={totalAmountTtc} denomination="TTC" /></strong> · <Amount value={totalAmountHt} denomination="HT" /><span className="ml-2 text-muted-foreground">not signed commitments</span></span>
+        <span data-testid="card-devis-total">Quoted · <strong><Amount value={totalAmountTtc} denomination="TTC" /></strong> · <Amount value={totalAmountHt} denomination="HT" /><span className="ml-2 text-muted-foreground">not signed commitments{unavailableFigureCount > 0 ? ` · incomplete: ${unavailableFigureCount} quotation(s) awaiting figures` : ""}</span></span>
         <span data-testid="card-devis-pending"><strong data-testid="text-devis-pending">{pendingDevisCount}</strong> pending</span>
         <span data-testid="card-devis-signed"><strong data-testid="text-devis-signed">{signedDevisCount}</strong> signed</span>
       </div>
@@ -6059,7 +6061,11 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
   const [rescrapeConfirmOpen, setRescrapeConfirmOpen] = useState(false);
   // QueryClient retains pending mutations when this quotation is collapsed or
   // another project is opened. Do not allow a second request on remount.
-  const rescrapeRunning = useIsMutating({ mutationKey: ["quotation-rescrape", devis.id] }) > 0;
+  const extractionJob = useQuery<{ running?: boolean; job?: { state: string; message?: string } }>({
+    queryKey: [`/api/devis/${devis.id}/extraction-review`],
+    refetchInterval: query => query.state.data?.running ? 4000 : false,
+  });
+  const rescrapeRunning = useIsMutating({ mutationKey: ["quotation-rescrape", devis.id] }) > 0 || !!extractionJob.data?.running;
 
   const rescrapeMutation = useMutation({
     mutationKey: ["quotation-rescrape", devis.id],
@@ -6067,7 +6073,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       setRescrapeConfirmOpen(false);
       toast({
         title: "Re-scraping in the background",
-        description: "You can continue working elsewhere in the app. We’ll notify you when the extraction is ready or if it fails.",
+        description: "You can continue working elsewhere in the app. Return to Review source to see the saved result.",
       });
     },
     mutationFn: async () => {
@@ -6307,7 +6313,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
       {/* Keep one editor mounted independently of lazily visited workflow sections. */}
       <ArchitectQuotationEditor key={`architect-editor-${devis.id}`} devisId={devis.id} projectId={projectId} disabled={isArchived} hideTrigger />
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground" aria-label="Quotation workflow status">
-        <span>Quoted · <Amount value={parseFloat(devis.amountHt)} denomination="HT" /> · <Amount value={parseFloat(devis.amountTtc)} denomination="TTC" /></span>
+        <span>{quotationAmountsUnavailable(devis) ? "Figures unavailable · review or re-extract the original PDF" : <>Quoted · <Amount value={parseFloat(devis.amountHt)} denomination="HT" /> · <Amount value={parseFloat(devis.amountTtc)} denomination="TTC" /></>}</span>
         <span>{financial ? commitmentLabel(financial) : "Commitment evidence · see financial summary"}</span>
         <span>{checksUnavailable ? (openChecksQuery.isError ? "Contractor checks unavailable" : "Checking contractor questions…") : `${openChecksCountForDevis} unresolved contractor question(s)`}{readiness ? ` · ${readiness.openClientChecks} client question(s)` : ""}</span>
       </div>

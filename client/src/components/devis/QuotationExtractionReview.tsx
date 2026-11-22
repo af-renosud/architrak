@@ -262,7 +262,8 @@ export function QuotationExtractionReview({
     {review.isPending ? <Loading title="Loading extraction evidence" /> : review.isError ?
       <Retry error={review.error} onRetry={() => void review.refetch()} /> : review.data && <>
         {(!hasPdf || !sourceUrl) && <p className="text-muted-foreground">Source PDF link unavailable.</p>}
-        {review.data?.running && <p role="status">Checking source sections. The original quotation remains unchanged until the candidate passes review.</p>}
+        {review.data?.running && <p role="status">Extraction is queued or running in the background. You can close this panel and continue working. Your quotation remains unchanged until you review and apply the result.</p>}
+        {!review.data?.running && review.data?.job?.message && <p role="status" className={review.data.job.state === "failed" ? "text-destructive" : ""}>{review.data.job.message}</p>}
         {(candidatePending || appliedAttemptId !== null) && <details className="review-source-candidate rounded-lg border border-[#c1a27b]/40 bg-[#c1a27b]/[0.04] p-3" open={candidatePending}>
           <summary className="cursor-pointer font-semibold">
             Prepared candidate · {candidatePending ? `Pending approval (attempt ${candidateAttemptId})` :
@@ -385,6 +386,7 @@ export function QuotationExtractionReview({
           <p className="font-semibold">{label(event.outcome, reviewOutcomes)} · {label(event.category, reviewCategories)}</p>
           <p className="text-muted-foreground">{event.kind} · {Number.isNaN(Date.parse(event.created_at)) ? event.created_at : new Date(event.created_at).toLocaleString()} · {event.effort_minutes ?? 0} min</p>
           <p className="whitespace-pre-wrap break-words">{event.reason || "No reason supplied."}</p>
+          {event.diagnostic && <p className="text-destructive">{event.diagnostic.message}{event.diagnostic.chunk ? ` Stopped at extraction batch ${event.diagnostic.chunk}.` : ""}</p>}
         </article>)}
         {correctionHistory}
       </div>

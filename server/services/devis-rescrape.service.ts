@@ -69,15 +69,15 @@ interface RescrapeResult {
  * transaction that rolls back on any error — no partial state, no
  * duplicated line numbers under concurrent submits.
  */
-export async function rescrapeDevis(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }): Promise<RescrapeResult> {
-  try { return await runRescrape(devisId, approval); }
+export async function rescrapeDevis(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }, assertOwner?: () => Promise<void>, eventWriter: typeof recordExtractionEvent = recordExtractionEvent): Promise<RescrapeResult> {
+  try { return await runRescrape(devisId, approval, assertOwner, eventWriter); }
   catch (error) {
-    await recordExtractionEvent(devisId, "attempt", "failed", { category: "unavailable" });
+    await eventWriter(devisId, "attempt", "failed", { category: "unavailable" });
     throw error;
   }
 }
 
-async function runRescrape(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }): Promise<RescrapeResult> {
+async function runRescrape(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }, assertOwner?: () => Promise<void>, eventWriter: typeof recordExtractionEvent = recordExtractionEvent): Promise<RescrapeResult> {
   // ----- Phase 1: load + parse OUTSIDE the transaction. -----
   // The Gemini call can take several seconds; we don't want it holding a
   // row lock that long.
@@ -107,7 +107,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
     || (initial.signOffStage && !["received", "checked_internal", "client_rejected"].includes(initial.signOffStage))) {
     return { success: false, status: 409, data: { message: "Issued, signed or closed quotations cannot be re-scraped." } };
   }
-  await recordExtractionEvent(devisId, "attempt", "started");
+  await eventWriter(devisId, "attempt", "started");
   const initialLines = await storage.getDevisLineItems(devisId);
   const initialTranslation = await storage.getDevisTranslation(devisId);
   let beforeFingerprint = quotationWorkingVersion(initial, initialLines, initialTranslation);
@@ -116,7 +116,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
   try {
     buffer = await getDocumentBuffer(initial.pdfStorageKey);
   } catch (err: unknown) {
-    await recordExtractionEvent(devisId, "attempt", "failed", { category: "source_unavailable" });
+    await eventWriter(devisId, "attempt", "failed", { category: "source_unavailable" });
     const message = err instanceof Error ? err.message : String(err);
     return {
       success: false,
@@ -175,6 +175,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
   } else {
     parsed = await parseDocument(buffer, fileName);
   }
+  await assertOwner?.();
 
   if (
     parsed.documentType === "unknown" &&
@@ -184,16 +185,16 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
   ) {
     const transient = isTransientParseFailure(parsed);
     const reason = getParseFailureMessage(parsed);
-    await recordExtractionEvent(devisId, "attempt", "failed", { category: "extraction_unavailable" });
+    await eventWriter(devisId, "attempt", "failed", { category: "extraction_unavailable", diagnostic: parsed.extractionFailure });
     return {
       success: false,
       status: transient ? 503 : 422,
       data: {
-        message: transient
+        message: parsed.extractionFailure?.message ?? (transient
           ? `AI extraction temporarily unavailable${reason ? ` (${reason})` : ""}. Please try again in a moment.`
           : reason
             ? `AI extraction failed: ${reason}`
-            : "Could not extract meaningful data from this PDF on the second pass either.",
+            : "Could not extract meaningful data from this PDF on the second pass either."),
         code: transient ? RESCRAPE_ERROR_CODES.AI_TRANSIENT : RESCRAPE_ERROR_CODES.PARSE_FAILED,
         extraction: parsed,
       },
@@ -217,7 +218,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
     ...validation.warnings.filter(w => w.field === "quotationContentCoverage" && w.severity === "error"),
   ];
   if (blockingCompleteness.length > 0) {
-    await recordExtractionEvent(devisId, "attempt", "failed", { warnings: blockingCompleteness, extraction: parsed, preparedFingerprint: beforeFingerprint });
+    await eventWriter(devisId, "attempt", "failed", { warnings: blockingCompleteness, extraction: parsed, preparedFingerprint: beforeFingerprint });
     return {
       success: false,
       status: 422,
@@ -236,7 +237,8 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
   // A successful scrape is a proposal, not permission to erase existing rows.
   // Applying it is a separate explicit, version-bound review action.
   if (!approval) {
-    await recordExtractionEvent(devisId, "attempt", "prepared", {
+    await assertOwner?.();
+    await eventWriter(devisId, "attempt", "prepared", {
       extraction: parsed, warnings: allWarnings, preparedFingerprint: beforeFingerprint,
       sourceDigest: createHash("sha256").update(buffer).digest("hex"),
     });
@@ -476,10 +478,10 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
   });
 
   if (txResult.kind === "blocked") {
-    await recordExtractionEvent(devisId, "attempt", "failed", txResult.data);
+    await eventWriter(devisId, "attempt", "failed", txResult.data);
     return { success: false, status: txResult.status, data: txResult.data };
   }
-  await recordExtractionEvent(devisId, "attempt", "succeeded");
+  await eventWriter(devisId, "attempt", "succeeded");
 
   // ----- Phase 3: best-effort post-commit hooks. -----
   // The line delete cascaded the context-asset rows; remove their stored

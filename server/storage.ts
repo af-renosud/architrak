@@ -1515,11 +1515,11 @@ export interface IStorage {
 
   claimIntakeJobForAttempt(jobId: number): Promise<IntakeJob | null>;
 
-  markIntakeJobSucceeded(args: { jobId: number; attempts: number }): Promise<void>;
+  markIntakeJobSucceeded(args: { jobId: number; attempts: number; claimedAt: Date }): Promise<void>;
 
-  markIntakeJobDeadLettered(args: { jobId: number; attempts: number; lastError: string }): Promise<void>;
+  markIntakeJobDeadLettered(args: { jobId: number; attempts: number; lastError: string; claimedAt: Date }): Promise<void>;
 
-  markIntakeJobPendingRetry(args: { jobId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void>;
+  markIntakeJobPendingRetry(args: { jobId: number; attempts: number; lastError: string; nextAttemptAt: Date; claimedAt: Date }): Promise<void>;
 
   reclaimStaleIntakeJobs(maxAgeMs: number): Promise<number>;
 
@@ -8099,25 +8099,25 @@ export class DatabaseStorage implements IStorage {
     return row ?? null;
   }
 
-  async markIntakeJobSucceeded(args: { jobId: number; attempts: number }): Promise<void> {
+  async markIntakeJobSucceeded(args: { jobId: number; attempts: number; claimedAt: Date }): Promise<void> {
     await db
       .update(intakeJobs)
       .set({ state: "succeeded", attempts: args.attempts, lastError: null, updatedAt: sql`CURRENT_TIMESTAMP` })
-      .where(eq(intakeJobs.id, args.jobId));
+      .where(and(eq(intakeJobs.id, args.jobId), eq(intakeJobs.state, "in_flight"), eq(intakeJobs.lastAttemptAt, args.claimedAt)));
   }
 
-  async markIntakeJobDeadLettered(args: { jobId: number; attempts: number; lastError: string }): Promise<void> {
+  async markIntakeJobDeadLettered(args: { jobId: number; attempts: number; lastError: string; claimedAt: Date }): Promise<void> {
     await db
       .update(intakeJobs)
       .set({ state: "dead_letter", attempts: args.attempts, lastError: args.lastError, updatedAt: sql`CURRENT_TIMESTAMP` })
-      .where(eq(intakeJobs.id, args.jobId));
+      .where(and(eq(intakeJobs.id, args.jobId), eq(intakeJobs.state, "in_flight"), eq(intakeJobs.lastAttemptAt, args.claimedAt)));
   }
 
-  async markIntakeJobPendingRetry(args: { jobId: number; attempts: number; lastError: string; nextAttemptAt: Date }): Promise<void> {
+  async markIntakeJobPendingRetry(args: { jobId: number; attempts: number; lastError: string; nextAttemptAt: Date; claimedAt: Date }): Promise<void> {
     await db
       .update(intakeJobs)
       .set({ state: "pending", attempts: args.attempts, lastError: args.lastError, nextAttemptAt: args.nextAttemptAt, updatedAt: sql`CURRENT_TIMESTAMP` })
-      .where(eq(intakeJobs.id, args.jobId));
+      .where(and(eq(intakeJobs.id, args.jobId), eq(intakeJobs.state, "in_flight"), eq(intakeJobs.lastAttemptAt, args.claimedAt)));
   }
 
   async reclaimStaleIntakeJobs(maxAgeMs: number): Promise<number> {
@@ -8125,7 +8125,8 @@ export class DatabaseStorage implements IStorage {
     const reclaimed = await db
       .update(intakeJobs)
       .set({ state: "pending", nextAttemptAt: new Date(), updatedAt: sql`CURRENT_TIMESTAMP` })
-      .where(and(eq(intakeJobs.state, "in_flight"), lte(intakeJobs.lastAttemptAt, cutoff)))
+      .where(and(eq(intakeJobs.state, "in_flight"), lte(intakeJobs.lastAttemptAt, cutoff),
+        sql`NOT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND classid=849 AND objid=${intakeJobs.id} AND granted)`))
       .returning({ id: intakeJobs.id });
     return reclaimed.length;
   }

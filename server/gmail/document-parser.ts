@@ -1,4 +1,5 @@
 import { createHash as quotationHash } from "node:crypto";
+import { boundedExtractionCall, decodeExtractionResponse, extractionFailure, ExtractionResponseError, withExtractionBudget } from "./extraction-response";
 import OpenAI from "openai";
 import { GoogleGenerativeAI, SchemaType, type ResponseSchema } from "@google/generative-ai";
 import { storage } from "../storage";
@@ -30,6 +31,9 @@ import {
 const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 export function isTransientGeminiError(err: unknown): boolean {
+  const status = (err as { status?: unknown } | null)?.status;
+  if (typeof status === "number") return TRANSIENT_HTTP_STATUSES.has(status);
+  if (err instanceof ExtractionResponseError || err instanceof SyntaxError) return true;
   const msg = err instanceof Error ? err.message : String(err);
   if (!msg) return false;
   if (msg.startsWith("Financial admission context temporarily unavailable")) return true;
@@ -48,6 +52,8 @@ function getOpenAIClient() {
   return new OpenAI({
     apiKey: env.AI_INTEGRATIONS_OPENAI_API_KEY,
     baseURL: env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+    maxRetries: 0,
+    timeout: 60_000,
   });
 }
 
@@ -58,6 +64,7 @@ function getGeminiClient() {
 }
 
 export interface ParsedDocument {
+  extractionFailure?: ReturnType<typeof extractionFailure>;
   pricedItemVerification?: PricedEvidence;
   /** Native table recovery, never model-authored or a human approval. */
   nativeTableRecovery?: {
@@ -1409,12 +1416,12 @@ async function parseWithGemini(
 
   return retry(
     async () => {
-      const result = await model.generateContent([
+      const result = await boundedExtractionCall((_signal, timeout) => model.generateContent([
         buildDocumentExtractionPrompt(pageTexts),
         ...imageParts,
-      ]);
+      ], { timeout }));
       const text = result.response.text();
-      return JSON.parse(text) as ParsedDocument;
+      return decodeExtractionResponse(text, result.response.candidates?.[0]?.finishReason) as unknown as ParsedDocument;
     },
     {
       retries: 2,
@@ -1436,6 +1443,15 @@ async function parseWithOpenAI(
   modelId: string,
   pageTexts?: Array<string | null>,
 ): Promise<ParsedDocument> {
+  return retry(() => parseWithOpenAISingle(images, modelId, pageTexts), {
+    retries: 1, baseMs: 500, maxMs: 2000, jitter: true, shouldRetry: isTransientGeminiError,
+  });
+}
+async function parseWithOpenAISingle(
+  images: Buffer[],
+  modelId: string,
+  pageTexts?: Array<string | null>,
+): Promise<ParsedDocument> {
   const openai = getOpenAIClient();
 
   const imageContent = images.map(buf => ({
@@ -1443,8 +1459,9 @@ async function parseWithOpenAI(
     image_url: { url: `data:image/png;base64,${buf.toString("base64")}` },
   }));
 
-  const response = await openai.chat.completions.create({
+  const response = await boundedExtractionCall((signal, timeout) => openai.chat.completions.create({
     model: modelId || "gpt-4o",
+    response_format: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       {
@@ -1457,11 +1474,10 @@ async function parseWithOpenAI(
     ],
     max_tokens: 8000,
     temperature: 0,
-  });
+  }, { signal, timeout }));
 
-  const content = response.choices[0]?.message?.content || "{}";
-  const cleaned = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-  return JSON.parse(cleaned);
+  return decodeExtractionResponse(response.choices[0]?.message?.content ?? "",
+    response.choices[0]?.finish_reason) as unknown as ParsedDocument;
 }
 
 export interface PlanningSummaryRecoveryContext {
@@ -1914,7 +1930,9 @@ async function recoverPlanningSummaryWithGemini(
   }));
   return retry(
     async () => {
-      const result = await model.generateContent([prompt, ...imageParts]);
+      const result = await boundedExtractionCall((_signal, timeout) =>
+        model.generateContent([prompt, ...imageParts], { timeout }));
+      if (result.response.candidates?.[0]?.finishReason !== "STOP") throw new ExtractionResponseError("truncated_response");
       return JSON.parse(result.response.text()) as unknown;
     },
     {
@@ -1938,8 +1956,9 @@ async function recoverPlanningSummaryWithOpenAI(
     type: "image_url" as const,
     image_url: { url: `data:image/png;base64,${buf.toString("base64")}` },
   }));
-  const response = await openai.chat.completions.create({
+  const response = await boundedExtractionCall((signal, timeout) => openai.chat.completions.create({
     model: modelId || "gpt-4o",
+    response_format: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       {
@@ -1952,8 +1971,10 @@ async function recoverPlanningSummaryWithOpenAI(
     ],
     max_tokens: 2000,
     temperature: 0,
-  });
-  const content = response.choices[0]?.message?.content || '{"lines":[]}';
+  }, { signal, timeout }));
+  const content = response.choices[0]?.message?.content ?? "";
+  if (!content.trim()) throw new ExtractionResponseError("empty_response");
+  if (response.choices[0]?.finish_reason !== "stop") throw new ExtractionResponseError("truncated_response");
   const cleaned = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
   return JSON.parse(cleaned) as unknown;
 }
@@ -2349,7 +2370,7 @@ export function extractionChunkPagesFor(
   provider: string,
   pageEvidence: ExtractionCoverage["pageEvidence"],
 ): number {
-  if (provider !== "openai" || !pageEvidence?.length) return EXTRACTION_CHUNK_PAGES;
+  if (!pageEvidence?.length) return EXTRACTION_CHUNK_PAGES;
   const candidateRows = pageEvidence.reduce((sum, page) => sum + page.candidateRows, 0);
   return candidateRows > DENSE_OPENAI_CANDIDATE_ROW_THRESHOLD
     ? 1
@@ -2374,6 +2395,14 @@ function relatedDocumentReferenceKey(reference: RelatedDocumentReference): strin
 export function mergeChunkedParses(
   chunks: Array<{ parsed: ParsedDocument; pageOffset: number; pageCount: number }>,
 ): ParsedDocument {
+  const situationNumbers = chunks.map(chunk => chunk.parsed.situationNumber)
+    .filter((value): value is number => value != null);
+  if (situationNumbers.some(value => !Number.isInteger(value) || value < 1)
+      || new Set(situationNumbers).size > 1) {
+    // Conflicting identity must never be resolved by first/last-wins:
+    // intake might otherwise attach a PDF to a different situation.
+    throw new ExtractionResponseError("invalid_shape");
+  }
   if (chunks.length === 1 && chunks[0].pageOffset === 0) return chunks[0].parsed;
 
   const FIRST_WINS = [
@@ -2387,7 +2416,9 @@ export function mergeChunkedParses(
     "acompteAmountHt", "acompteTrigger", "acomptePaidAmountTtc", "acomptePaidEvidenceText",
   ] as const;
 
-  const merged: ParsedDocument = { documentType: "unknown" };
+  const merged: ParsedDocument = { documentType: "unknown",
+    ...(situationNumbers.length ? { situationNumber: situationNumbers[0] } : {}),
+  };
   for (const { parsed } of chunks) {
     if (
       merged.documentType === "unknown" || merged.documentType === "other"
@@ -2530,6 +2561,20 @@ export async function parseDocument(
   fileName: string,
   deps: ParseDocumentDeps = {},
 ): Promise<ParsedDocument> {
+  try { return await withExtractionBudget(() => parseDocumentWithinBudget(pdfBuffer, fileName, deps)); }
+  catch (error) {
+    if (error instanceof ExtractionResponseError) {
+      return { documentType: "unknown", rawText: `Parse failed (transient): ${error.message}`, extractionFailure: extractionFailure(error, "document_deadline") };
+    }
+    throw error;
+  }
+}
+
+async function parseDocumentWithinBudget(
+  pdfBuffer: Buffer,
+  fileName: string,
+  deps: ParseDocumentDeps,
+): Promise<ParsedDocument> {
   const _getActiveModel = deps.getActiveModel ?? getActiveModel;
   const _parseWithGemini = deps.parseWithGemini ?? parseWithGemini;
   const _parseWithOpenAI = deps.parseWithOpenAI ?? parseWithOpenAI;
@@ -2591,7 +2636,7 @@ export async function parseDocument(
   if (extractionChunkPages === 1 && images.length > 1) {
     const candidateRows = pageEvidence?.reduce((sum, page) => sum + page.candidateRows, 0) ?? 0;
     console.log(
-      `[DocumentParser] Dense OpenAI document (${candidateRows} text-evidenced candidate rows); extracting one page per request`,
+      `[DocumentParser] Dense document (${candidateRows} text-evidenced candidate rows); extracting one page per request`,
     );
   }
 
@@ -2609,8 +2654,8 @@ export async function parseDocument(
       } catch (err: any) {
         finalErr = err;
         finalErrTransient = isTransientGeminiError(err);
-        console.error(`[DocumentParser] Gemini parse error (transient=${finalErrTransient}):`, err.message);
-        if (finalErrTransient && _hasOpenAIKey()) {
+        console.error(`[DocumentParser] Gemini parse error (transient=${finalErrTransient}):`, extractionFailure(err));
+        if ((finalErrTransient || extractionFailure(err).code === "provider_billing") && _hasOpenAIKey()) {
           const fallbackModelId = await _getOpenAIFallbackModelId();
           console.warn(`[DocumentParser] Falling back to OpenAI/${fallbackModelId} after Gemini transient failure`);
           try {
@@ -2628,7 +2673,7 @@ export async function parseDocument(
             // surfaces as permanent, not transient.
             finalErr = fallbackErr;
             finalErrTransient = isTransientGeminiError(fallbackErr);
-            console.error(`[DocumentParser] OpenAI fallback also failed (transient=${finalErrTransient}):`, fallbackErr.message);
+            console.error(`[DocumentParser] OpenAI fallback also failed (transient=${finalErrTransient}):`, extractionFailure(fallbackErr));
           }
         }
       }
@@ -2638,8 +2683,8 @@ export async function parseDocument(
       } catch (err: any) {
         finalErr = err;
         finalErrTransient = isTransientGeminiError(err);
-        console.error(`[DocumentParser] OpenAI parse error (transient=${finalErrTransient}):`, err.message);
-        if (finalErrTransient && _hasGeminiKey()) {
+        console.error(`[DocumentParser] OpenAI parse error (transient=${finalErrTransient}):`, extractionFailure(err));
+        if ((finalErrTransient || extractionFailure(err).code === "provider_billing") && _hasGeminiKey()) {
           const fallbackModelId = _getGeminiFallbackModelId();
           console.warn(`[DocumentParser] Falling back to Gemini/${fallbackModelId} after OpenAI transient/invalid response`);
           try {
@@ -2653,7 +2698,7 @@ export async function parseDocument(
           } catch (fallbackErr: any) {
             finalErr = fallbackErr;
             finalErrTransient = isTransientGeminiError(fallbackErr);
-            console.error(`[DocumentParser] Gemini fallback also failed (transient=${finalErrTransient}):`, fallbackErr.message);
+            console.error(`[DocumentParser] Gemini fallback also failed (transient=${finalErrTransient}):`, extractionFailure(fallbackErr));
           }
         }
       }
@@ -2669,6 +2714,7 @@ export async function parseDocument(
   let finalErr: unknown = null;
   let finalErrTransient = false;
   const chunkCount = Math.ceil(images.length / extractionChunkPages);
+  let failedChunk = 1;
 
   if (chunkCount <= 1) {
     ({ parsed, err: finalErr, transient: finalErrTransient } = await parseChunk(
@@ -2686,6 +2732,7 @@ export async function parseDocument(
         pageTexts.slice(pageOffset, pageOffset + extractionChunkPages),
       );
       if (!result.parsed) {
+        failedChunk = i + 1;
         finalErr = result.err ?? new Error(`chunk ${i + 1}/${chunkCount} returned no result`);
         finalErrTransient = result.transient;
         console.error(`[DocumentParser] Chunk ${i + 1}/${chunkCount} (pages ${pageOffset + 1}–${pageOffset + chunkImages.length}) failed — aborting whole extraction`);
@@ -2700,7 +2747,7 @@ export async function parseDocument(
     }
   }
 
-  if (parsed && provider === "openai" && extractionChunkPages === 1) {
+  if (parsed?.documentType === "quotation" && extractionChunkPages === 1) {
     const expectedRows = pageEvidence?.reduce(
       (sum, page) => sum + page.candidateRows,
       0,
@@ -2718,13 +2765,13 @@ export async function parseDocument(
         parsed.lineItems = textLayerExtraction.lineItems;
       } else {
         const fallbackModelId = await _getDenseCompletenessFallbackModelId();
-        if (!fallbackModelId) {
+        if (!fallbackModelId || !_hasGeminiKey()) {
           console.warn(
             `[DocumentParser] Text layer yielded ${textLayerExtraction.lineItems.length}/${expectedRows} exact table rows and no Gemini completeness fallback is configured`,
           );
         } else {
         console.warn(
-          `[DocumentParser] Dense OpenAI extraction returned ${extractedRows}/${expectedRows} text-evidenced rows; trying one whole-document Gemini/${fallbackModelId} completeness pass`,
+          `[DocumentParser] Dense extraction returned ${extractedRows}/${expectedRows} text-evidenced rows; trying one whole-document Gemini/${fallbackModelId} completeness pass`,
         );
         try {
           const fallbackParsed = await _parseWithGemini(
@@ -2748,8 +2795,8 @@ export async function parseDocument(
           }
         } catch (fallbackErr) {
           console.warn(
-            "[DocumentParser] Gemini completeness fallback failed; preserving the OpenAI extraction:",
-            fallbackErr instanceof Error ? fallbackErr.message : fallbackErr,
+            "[DocumentParser] Gemini completeness fallback failed; preserving the initial extraction:",
+            extractionFailure(fallbackErr, "completeness"),
           );
         }
         }
@@ -2785,12 +2832,12 @@ export async function parseDocument(
               model: id,
               generationConfig: { temperature: 0, responseMimeType: "application/json" },
             }, { timeout: 120_000 });
-            const response = await model.generateContent([
+            const response = await boundedExtractionCall((_signal, timeout) => model.generateContent([
               buildDocumentExtractionPrompt(),
               "Preserve every printed product reference verbatim in its description. A '(suite)' block continues the same product, even across pages. Never merge equal-price products or transfer specifications between references.",
               { inlineData: { mimeType: "application/pdf", data: pdf.toString("base64") } },
-            ]);
-            return JSON.parse(response.response.text()) as ParsedDocument;
+            ], { timeout }));
+            return decodeExtractionResponse(response.response.text(), response.response.candidates?.[0]?.finishReason) as unknown as ParsedDocument;
           });
           const candidate = await recover(pdfBuffer, modelId);
           const recovered = acceptIllustratedRecovery(parsed, candidate, illustratedRows);
@@ -2903,9 +2950,11 @@ export async function parseDocument(
     return parsed;
   }
 
-  const message = finalErr instanceof Error ? finalErr.message : String(finalErr);
+  const diagnostic = extractionFailure(finalErr, "ai_response", failedChunk);
+  const message = diagnostic.message;
   return {
     documentType: "unknown",
+    extractionFailure: diagnostic,
     rawText: `Parse failed${finalErrTransient ? " (transient)" : ""}: ${message}`,
   };
 }

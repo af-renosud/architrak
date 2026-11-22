@@ -37,6 +37,7 @@ const { storageSpy } = vi.hoisted(() => ({
     createSituation: vi.fn(async (row: Record<string, unknown>) => ({ id: 88, ...row })),
     createSituationLine: vi.fn(async (row: Record<string, unknown>) => ({ id: 1, ...row })),
     attachSituationSourcePdf: vi.fn(async () => ({})),
+    attachSituationSourceAndRouteIntake: vi.fn(async () => ({ situation: { id: 32 } })),
   },
 }));
 
@@ -111,6 +112,53 @@ beforeEach(() => {
 });
 
 describe("intake routing — situation documents (Task #450)", () => {
+  it("retains the printed number from dense two-page Gemini extraction and attaches to that existing situation", async () => {
+    const { parseDocument: realParse } = await vi.importActual<typeof import("../gmail/document-parser")>("../gmail/document-parser");
+    const pageText = Array.from({length:48}, (_,i) =>
+      `${i+1}. Fourniture et pose element ${i+1}   1 u   10,00   10,00`).join("\n");
+    const gemini = vi.fn(async () => ({
+      documentType: "situation" as const, situationNumber: 3, contractorName: "Acme",
+      amountHt: 960, amountTtc: 1152,
+      lineItems: Array.from({length:48},()=>({description:"Fourniture et pose",total:10,percentComplete:50})),
+    }));
+    const parsed = await realParse(Buffer.from("isolated PDF"), "dense-situation.pdf", {
+      pdfToImagesWithCoverage: async()=>({images:[Buffer.from("page1"),Buffer.from("page2")],pdfPageCount:2}),
+      getPageTexts: async()=>[pageText,pageText],
+      getActiveModel: async()=>({provider:"gemini",modelId:"gemini-test"}),
+      parseWithGemini: gemini,
+    });
+    expect(gemini).toHaveBeenCalledTimes(2);
+    expect(parsed.situationNumber).toBe(3);
+    expect(parsed.lineItems).toHaveLength(96);
+    storageSpy.getProjectIntakeDocument.mockResolvedValue({
+      ...INTAKE_DOC, extractedData:{...parsed,preParsedFromEmail:true},
+    });
+    storageSpy.getSituationsByDevis.mockResolvedValue([
+      {id:31,devisId:7,situationNumber:2,status:"confirmed",sourceStorageKey:null},
+      {id:32,devisId:7,situationNumber:3,status:"confirmed",sourceStorageKey:null},
+    ] as never[]);
+    await attemptIntakeJob(801);
+    expect(storageSpy.attachSituationSourceAndRouteIntake).toHaveBeenCalledWith(expect.objectContaining({
+      situationId: 32,
+      intakeDocumentId: INTAKE_DOC.id,
+      sourceStorageKey: INTAKE_DOC.storageKey,
+    }));
+    expect(storageSpy.createSituation).not.toHaveBeenCalled();
+    expect(storageSpy.createSituationLine).not.toHaveBeenCalled();
+  });
+
+  it("refuses inconsistent or invalid situation numbers across chunks", async () => {
+    const {mergeChunkedParses} = await vi.importActual<typeof import("../gmail/document-parser")>("../gmail/document-parser");
+    const chunk = (situationNumber: number, pageOffset: number) => ({
+      parsed:{documentType:"situation" as const,situationNumber},pageOffset,pageCount:1,
+    });
+    expect(()=>mergeChunkedParses([chunk(2,0),chunk(3,1)])).toThrow();
+    expect(()=>mergeChunkedParses([chunk(0,0),chunk(0,1)])).toThrow();
+    expect(()=>mergeChunkedParses([chunk(1.5,0),chunk(1.5,1)])).toThrow();
+    expect(mergeChunkedParses([
+      {parsed:{documentType:"unknown"},pageOffset:0,pageCount:1},chunk(3,1),
+    ]).situationNumber).toBe(3);
+  });
   it("unique mode_b devis → DRAFT situation with claimed % lines + promotion", async () => {
     await attemptIntakeJob(801);
 

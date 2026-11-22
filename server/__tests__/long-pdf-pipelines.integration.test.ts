@@ -137,6 +137,12 @@ const { storageSpy, uploadDocumentSpy, txSpies, dbSpy, poolQuery } = vi.hoisted(
     uploadDocumentSpy: vi.fn(async (_p: number, name: string) => `mock-key/${name}`),
   };
 });
+// This suite isolates routing. Real session-lock ownership is exercised in
+// quotation-rescrape-jobs.integration.test.ts against PostgreSQL.
+vi.mock("../services/intake/worker-lock", () => ({
+  assertIntakeWorkerAlive: async () => {},
+  withIntakeWorkerLock: async (_id: number, work: () => Promise<unknown>) => work(),
+}));
 
 vi.mock("../storage", () => ({ storage: storageSpy }));
 vi.mock("../db", () => ({ db: dbSpy, pool: { query: poolQuery } }));

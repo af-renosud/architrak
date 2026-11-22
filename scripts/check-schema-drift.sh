@@ -23,6 +23,11 @@ npx drizzle-kit generate --name __schema_drift_check__ >/tmp/drizzle-drift.log 2
 }
 
 AFTER="$(git status --porcelain -- migrations/ || true)"
+if grep -Eq '(^Error:|which is a collision|^error:)' /tmp/drizzle-drift.log; then
+  cat /tmp/drizzle-drift.log
+  echo "ERROR: drizzle-kit reported a schema error despite its exit status." >&2
+  exit 2
+fi
 
 # Drift = entries present after generate that were not present before.
 DRIFT="$(comm -13 <(printf '%s\n' "$BEFORE" | sort) <(printf '%s\n' "$AFTER" | sort) | sed '/^$/d' || true)"

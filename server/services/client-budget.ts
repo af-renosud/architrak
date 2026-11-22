@@ -5,6 +5,7 @@ import { clientProjectBudgets, clientProjectShareAudit, contractors, devis, proj
 import type { ClientBudgetEntry, ClientBudgetSave, ClientBudgetState, PublicClientBudget } from "@shared/client-budget";
 import { quotationCommitmentStatus } from "@shared/quotation-commitment";
 import { getProjectFinancialSummary } from "./financial-summary.service";
+import { quotationAmountsUnavailable } from "@shared/quotation-amount-availability";
 
 export class ClientBudgetError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -25,6 +26,7 @@ export function budgetLifecycleBlock(d: Devis): string | null {
 }
 
 export function budgetBlockReason(d: Devis): string | null {
+  if (quotationAmountsUnavailable(d)) return "Extract or enter the quotation figures before including it in the client budget.";
   const inactive = budgetLifecycleBlock(d);
   if (inactive) return inactive;
   const ht = budgetCents(d.amountHt), ttc = budgetCents(d.amountTtc);
