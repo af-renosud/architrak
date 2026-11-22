@@ -605,6 +605,32 @@ describe("devis re-scrape — long-PDF parse flows coverage into the updated dev
     expect(txSpies.updateSet.mock.calls[0][0]).toMatchObject({ amountHt: "200", amountTtc: "240" });
   });
 
+  it("prepares and applies a native candidate without any AI call, preserving unpriced source evidence", async () => {
+    const actual = await vi.importActual<typeof import("../gmail/document-parser")>("../gmail/document-parser");
+    const pages = [
+      "Réf. Devis : TEST\nN°  Désignation  Un Quantité  Prix unit.  Montant H.T.\n1  WORK\nExcludes other trades\n1.1  Installation  u  1,000  100,00  100,00\n1.2  By electrician  u  2,000\nSous-total WORK  100,00\n©Sage",
+      "Total H.T.  100,00\nTotal T.V.A. 10,00 %  10,00\nTotal T.T.C.  110,00\nN°  Récapitulatif  Quantité  Prix U.  Montant H.T.\n1  WORK  1,000  100,00  100,00\n©Sage",
+    ];
+    const candidate = await actual.parseDocument(FIXTURE_PDF, "native.pdf", {
+      preferNativeQuotationRecovery: true,
+      getPdfPageCount: async () => 2, getPageTexts: async () => pages,
+      getActiveModel: async () => { throw new Error("Provider unavailable"); },
+      pdfToImagesWithCoverage: async () => { throw new Error("Rendering unavailable"); },
+    });
+    parseDocumentMock.mockResolvedValue(candidate);
+    expect((await rescrapeDevis(42)).data.prepared).toBe(true);
+    expect(txSpies.insertValues).not.toHaveBeenCalled();
+    poolQuery.mockResolvedValueOnce({ rows: [{ snapshot: { extraction: candidate,
+      preparedFingerprint: quotationWorkingVersion(DEVIS_ROW, [], undefined) } }] });
+    const result = await rescrapeDevis(42, { attemptId: 1, actorId: 1, reason: "Reviewed original source and exclusions." });
+    expect(result.success).toBe(true);
+    const inserted = txSpies.insertValues.mock.calls[0][0];
+    expect(inserted[0].description).toContain("Excludes other trades");
+    expect(inserted[1].unitPriceHt).toBeNull();
+    expect(candidate.lineItems![1].total).toBeUndefined();
+    expect(txSpies.updateSet).toHaveBeenCalledWith(expect.objectContaining({ amountHt: "100", amountTtc: "110" }));
+  });
+
   it("refuses an unsupported prepared candidate even when its totals match", async () => {
     poolQuery.mockResolvedValueOnce({ rows: [{ snapshot: { extraction: { ...realParsed,
       nativeTableRecovery: { parser: "poste-table-v1", sourceDigest: createHash("sha256").update(FIXTURE_PDF).digest("hex"),

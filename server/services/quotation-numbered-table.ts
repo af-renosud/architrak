@@ -28,8 +28,9 @@ export function recoverNumberedTable(pages: Array<string | null>) {
   const sections = new Map<string, { sum: number; closed: boolean; children: number }>();
   const recaps = new Map<string, number>();
   let stack: string[] = [], current = -1, inTable = false, recap = false;
-  let ht: number | undefined, ttc: number | undefined, tax: number | undefined;
+  let ht: number | undefined, ttc: number | undefined, tax: number | undefined, tvaRate: number | undefined;
   let found = false;
+  const pendingText: string[] = [];
   const moneyAtEnd = new RegExp(String.raw`(${amount})\s*$`);
   const unexplainedMoney = (text: string) => moneyAtEnd.test(text)
     || /\s{2,}[+\-−]?\d[\d ,.\u00a0]*(?:\s*(?:€|EUR|HT|TTC))?(?:\s|$)/i.test(text);
@@ -48,6 +49,7 @@ export function recoverNumberedTable(pages: Array<string | null>) {
           if (tax !== undefined) return null;
           tax = value;
           const rate = numeric(total[1].match(/([\d,]+)\s*%/)![1]);
+          tvaRate = rate;
           if (ht === undefined || cents(ht * rate / 100) !== cents(tax)) return null;
         }
         current = -1; continue;
@@ -89,7 +91,7 @@ export function recoverNumberedTable(pages: Array<string | null>) {
         section.children++;
         if (item.total !== undefined && cents(item.quantity * item.unitPrice!) !== cents(item.total)) return null;
         for (const ref of stack) sections.get(ref)!.sum += cents(item.total ?? 0);
-        rows.push({ description: `${item.reference} ${item.description}`, quantity: item.quantity,
+        rows.push({ description: [...pendingText.splice(0), `${item.reference} ${item.description}`].join(" "), quantity: item.quantity,
           unit: item.unit, unitPrice: item.unitPrice, total: item.total, pageHint: p + 1 });
         current = rows.length - 1;
         evidence.push({ pages: [p + 1], priceText: raw.trim(), sourceText: rows[current].description });
@@ -101,6 +103,7 @@ export function recoverNumberedTable(pages: Array<string | null>) {
         if (sections.has(ref) || moneyAtEnd.test(text) || (parent ? stack.at(-1) !== parent : stack.length !== 0)) return null;
         const siblings = Array.from(sections.keys()).filter(k => k.split(".").slice(0, -1).join(".") === parent);
         if (Number(ref.split(".").at(-1)) !== siblings.length + 1) return null;
+        pendingText.push(text);
         sections.set(ref, { sum: 0, closed: false, children: 0 }); stack.push(ref); current = -1; continue;
       }
       if (/^Sous-total\s/i.test(text)) {
@@ -115,12 +118,13 @@ export function recoverNumberedTable(pages: Array<string | null>) {
         rows[current].description += ` ${text}`;
         evidence[current].sourceText = rows[current].description;
         if (!evidence[current].pages.includes(p + 1)) evidence[current].pages.push(p + 1);
-      }
+      } else pendingText.push(text);
     }
   }
   if (!found || !recap || stack.length || !rows.length || ht === undefined || ttc === undefined || tax === undefined
     || cents(ht) + cents(tax) !== cents(ttc) || sections.size !== recaps.size
     || Array.from(sections).some(([ref, s]) => !s.closed || recaps.get(ref) !== s.sum)
     || rows.reduce((n, r) => n + cents(r.total ?? 0), 0) !== cents(ht)) return null;
-  return { rows, evidence, amountHt: ht, amountTtc: ttc };
+   if (pendingText.length) return null;
+   return { rows, evidence, amountHt: ht, amountTtc: ttc, tvaRate };
 }

@@ -42,7 +42,7 @@ describe("numbered native quotation tables", () => {
     expect(r.rows[1].total).toBeUndefined();
     const pdf = Buffer.from("test");
     const parsed: ParsedDocument = { documentType: "quotation", lineItems: r.rows,
-      nativeTableRecovery: { ...r, parser: "numbered-table-v1", initialLineItems: [],
+      nativeTableRecovery: { ...r, parser: "numbered-table-v2", initialLineItems: [],
         sourceDigest: createHash("sha256").update(pdf).digest("hex") } };
     expect(collectPricedEvidence(parsed, pdf).issues).toEqual([]);
     expect(collectPricedEvidence(parsed, pdf).rowsDigest).toBe(
@@ -66,6 +66,24 @@ describe("numbered native quotation tables", () => {
     expect(recoverNumberedTable(pages.map(p => p.replace(from, to)))).toBeNull();
   });
   it("refuses missing page text", () => expect(recoverNumberedTable([...pages, null])).toBeNull());
+  it("preserves section qualifications instead of silently discarding them", () => {
+    const source = pages.map(p => p.replace("2.1  Plumbing\n", "2.1  Plumbing\nExcludes external connections; option subject to approval\n"));
+    expect(recoverNumberedTable(source)?.rows[2].description).toContain("Excludes external connections; option subject to approval");
+  });
+  it("recovers before rendering or AI even when both services are unavailable", async () => {
+    const { parseDocument } = await import("../../gmail/document-parser");
+    const result = await parseDocument(Buffer.from("native test"), "source.pdf", {
+      preferNativeQuotationRecovery: true,
+      getPdfPageCount: async () => pages.length,
+      getPageTexts: async () => pages.map((p, i) => i ? p : `Réf. Devis : TEST\n${p}`),
+      pdfToImagesWithCoverage: async () => { throw new Error("Rendering must not run"); },
+      getActiveModel: async () => { throw new Error("AI must not run"); },
+    });
+    expect(result.lineItems).toHaveLength(3);
+    expect(result.tvaRate).toBe(10);
+    expect(result.extractionCoverage?.renderedPageCount).toBe(0);
+    expect(result.pricedItemVerification?.issues).toEqual([]);
+  });
   it("integrates recovery after partial AI output without counting recap as missing work", async () => {
     const { parseDocument } = await import("../../gmail/document-parser");
     const pdf = Buffer.from("native numbered fixture");
@@ -79,7 +97,7 @@ describe("numbered native quotation tables", () => {
       getDenseCompletenessFallbackModelId: async () => null,
     });
     expect(result.lineItems).toHaveLength(3);
-    expect(result.nativeTableRecovery?.parser).toBe("numbered-table-v1");
+    expect(result.nativeTableRecovery?.parser).toBe("numbered-table-v2");
     expect(result.pricedItemVerification?.issues).toEqual([]);
     expect(result.extractionCoverage?.pageEvidence?.[2].candidateRows).toBe(0);
   });

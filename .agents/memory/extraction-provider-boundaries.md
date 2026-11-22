@@ -4,6 +4,18 @@ description: Lessons from malformed AI output and multi-page replacement quotati
 ---
 Treat readable totals and a successful AI response as separate from a complete, reconciled item list.
 
+Supported deterministic PDF recovery must run independently of AI and rasterisation, and account for section-level qualifications as well as money.
+
+**Why:** A provider failure prevented a valid native reader from ever running; separately, arithmetic reconciliation could pass while section exclusions were silently dropped.
+
+**How to apply:** Prove recovery with both model and renderer unavailable, retain source wording, and test preparation plus guarded application rather than the reader alone.
+
+Table-only recovery must preserve metadata it did not examine from the unchanged original, particularly bank-account evidence.
+
+**Why:** Clearing an unexamined extracted IBAN disables the certificate banking-mismatch gate even when the original PDF and its bank details have not changed.
+
+**How to apply:** Distinguish partial extraction scope explicitly; regression-test recovery followed by certificate generation with a known mismatch and no override.
+
 **Why:** A nine-page replacement quotation yielded the correct header totals while omitting work rows and including the final summary as extra charges. Correct totals did not make its items safe to apply.
 
 **How to apply:** Test real dense documents against both row coverage and reconciliation. Keep failures reviewable, never automatically apply a partial extraction, and do not substitute the document total for missing rows.

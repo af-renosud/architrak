@@ -45,7 +45,8 @@ suite("architect correction real PostgreSQL transactions (isolated schema)", () 
       CREATE TABLE invoices(id serial PRIMARY KEY,devis_id integer);
       CREATE TABLE situations(id serial PRIMARY KEY,devis_id integer);
       CREATE TABLE acompte_no_invoice_payments(id serial PRIMARY KEY,devis_id integer);
-      CREATE TABLE certificats(id serial PRIMARY KEY,project_id integer,contractor_id integer,status text);
+      CREATE TABLE certificats(id serial PRIMARY KEY,project_id integer,contractor_id integer,status text,acompte_devis_id integer,issuance_snapshot jsonb);
+      CREATE TABLE certificat_sources(id serial PRIMARY KEY,certificat_id integer,invoice_id integer,situation_id integer,late_association jsonb);
       CREATE TABLE situation_lines(id serial PRIMARY KEY,devis_line_item_id integer);
       CREATE TABLE client_checks(id serial PRIMARY KEY,devis_line_item_id integer,payload text);
       CREATE FUNCTION guard_duplicate_extraction_audit() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'immutable audit'; END; $$ LANGUAGE plpgsql;
@@ -58,6 +59,7 @@ suite("architect correction real PostgreSQL transactions (isolated schema)", () 
   });
   afterAll(async () => { if (pool) await pool.end(); if (admin) { await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); await admin.end(); } });
   beforeEach(async () => {
+    await pool.query("DELETE FROM certificat_sources; DELETE FROM certificats");
     const row = await pool.query(`INSERT INTO devis(project_id,contractor_id,pdf_storage_key,pdf_file_name,ai_extracted_data,amount_ht,amount_ttc,description_fr)
       VALUES(1,42,'fixture.pdf','original.pdf',$1,4505,4955.50,'Menuiseries') RETURNING id`,
       [JSON.stringify({ tvaRate: 10, quotationVerification: { verified: false }, originalOcr: "unchanged source extraction" })]);
@@ -66,6 +68,26 @@ suite("architect correction real PostgreSQL transactions (isolated schema)", () 
       VALUES($1,1,'Door A',1,'u',1795,1795),($1,2,'Door B',1,'u',1795,1795),($1,3,'Terminal',1,'u',915,915)`, [quoteId]);
     await pool.query(`INSERT INTO devis_translations(devis_id,status,header_translated,line_translations,contexts_version,approved_at,combined_pdf_storage_key)
       VALUES($1,'finalised','{"description":"Old English"}','[]',7,now(),'old-combined.pdf')`, [quoteId]);
+  });
+  it("allows an unrelated explicitly sourced certificate, but protects related and legacy certificates", async () => {
+    const invoice = (await pool.query("INSERT INTO invoices(devis_id) VALUES(99999) RETURNING id")).rows[0].id;
+    const cert = (await pool.query("INSERT INTO certificats(project_id,contractor_id,status,issuance_snapshot) VALUES(1,42,'paid',$1) RETURNING id",
+      [JSON.stringify({ sourceInvoiceIds: [invoice] })])).rows[0].id;
+    await pool.query("INSERT INTO certificat_sources(certificat_id,invoice_id) VALUES($1,$2)", [cert, invoice]);
+    expect((await current()).financialBlockedReason).toBeNull();
+    await pool.query("UPDATE certificat_sources SET late_association='{}'");
+    expect((await current()).financialBlockedReason).toBeTruthy();
+    await pool.query("UPDATE certificat_sources SET late_association=NULL");
+    await pool.query("UPDATE certificats SET acompte_devis_id=$1", [quoteId]);
+    expect((await current()).financialBlockedReason).toBeTruthy();
+    await pool.query("UPDATE certificats SET acompte_devis_id=NULL");
+    await pool.query("UPDATE invoices SET devis_id=$1 WHERE id=$2", [quoteId, invoice]);
+    expect((await current()).financialBlockedReason).toBeTruthy();
+    await pool.query("DELETE FROM certificat_sources");
+    expect((await current()).financialBlockedReason).toBeTruthy();
+    await pool.query("UPDATE certificats SET status='superseded'");
+    await pool.query("UPDATE invoices SET devis_id=99999 WHERE id=$1", [invoice]);
+    expect((await current()).financialBlockedReason).toBeNull();
   });
   it("saves unrestricted bilingual/header/context edits and reorder with stable links, audit, cleared approval and source unchanged", async () => {
     const before = await current(), ids = before.draft.lines.map(l => l.id);
@@ -160,9 +182,9 @@ suite("architect correction real PostgreSQL transactions (isolated schema)", () 
     await pool.query("UPDATE devis_line_items SET check_notes='new conversation evidence' WHERE devis_id=$1", [quoteId]);
   });
   it("rejects source-byte mismatch, absent VAT and missing baseline for financial changes without mutation", async () => {
-    await expect(save(d => { d.lines[0].totalHt = "1796.00"; })).rejects.toThrow("Confirm the final TTC");
+    await expect(save(d => { d.lines[0].totalHt = "1796.00"; })).rejects.toThrow("Confirm the original quotation total");
     await confirm("4955.50");
-    await expect(save(d => { d.lines[0].vatRate = ""; })).rejects.toThrow("valid decimal");
+    await expect(save(d => { d.lines[0].vatRate = ""; })).rejects.toThrow("VAT rate is missing");
     const old = source, other = await PDFDocument.create(); other.addPage([220, 200]); source = Buffer.from(await other.save());
     try { await expect(save(d => { d.headerFr = "Changed"; })).rejects.toThrow("locked source receipt"); } finally { source = old; }
     expect(correctionMoney(correctionCents("4955.51") - correctionCents("4955.50"))).toBe("0.01");

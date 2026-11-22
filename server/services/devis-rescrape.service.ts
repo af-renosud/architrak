@@ -1,4 +1,5 @@
 import { db, pool } from "../db";
+import { certificateProtectsQuotation } from "./quotation-certificate-protection";
 import { createHash } from "node:crypto";
 import { verifyQuotationManifest } from "./quotation-source-manifest";
 import { collectPricedEvidence } from "./quotation-priced-evidence";
@@ -173,7 +174,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
     }
     parsed = candidate;
   } else {
-    parsed = await parseDocument(buffer, fileName);
+    parsed = await parseDocument(buffer, fileName, { preferNativeQuotationRecovery: true });
   }
   await assertOwner?.();
 
@@ -258,6 +259,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
   let contextAssetsToClean: Awaited<ReturnType<typeof storage.getDevisLineContextAssetsByDevis>> = [];
 
   const txResult: TxResult = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${initial.projectId}, ${initial.contractorId})`);
     // Pessimistic lock on the devis row — serialises concurrent rescrape /
     // confirm / status mutations on the same devis.
     await tx.execute(sql`SELECT 1 FROM devis WHERE id = ${devisId} FOR UPDATE`);
@@ -276,6 +278,8 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
         data: { message: "Devis not found", code: RESCRAPE_ERROR_CODES.DEVIS_NOT_FOUND },
       };
     }
+    if (locked.projectId !== initial.projectId || locked.contractorId !== initial.contractorId)
+      return { kind: "blocked", status: 409, data: { message: "Quotation ownership changed. Prepare a fresh extraction." } };
     await tx.execute(sql`SELECT 1 FROM projects WHERE id=${locked.projectId} FOR SHARE`);
     await tx.execute(sql`SELECT id FROM devis_line_items WHERE devis_id=${devisId} FOR UPDATE`);
     await tx.execute(sql`SELECT devis_id FROM devis_translations WHERE devis_id=${devisId} FOR UPDATE`);
@@ -293,14 +297,18 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
     }
     const protection = await tx.execute<{ present: boolean }>(sql`
       SELECT EXISTS(SELECT 1 FROM projects WHERE id=${locked.projectId} AND archived_at IS NOT NULL)
+      OR EXISTS(SELECT 1 FROM quotation_source_baselines WHERE devis_id=${devisId})
+      OR EXISTS(SELECT 1 FROM quotation_architect_state WHERE devis_id=${devisId})
       OR EXISTS(SELECT 1 FROM devis_translations WHERE devis_id=${devisId}
         AND (status IN ('edited','finalised','processing')
           OR line_translations::text LIKE '%"edited": true%'))
       OR EXISTS(SELECT 1 FROM duplicate_extraction_audit WHERE devis_id=${devisId})
       OR EXISTS(SELECT 1 FROM extraction_row_corrections WHERE devis_id=${devisId})
       OR EXISTS(SELECT 1 FROM acompte_no_invoice_payments WHERE devis_id=${devisId})
-      OR EXISTS(SELECT 1 FROM certificats WHERE project_id=${locked.projectId}
-        AND contractor_id=${locked.contractorId} AND status <> 'superseded')
+      OR EXISTS(SELECT 1 FROM situations WHERE devis_id=${devisId})
+      OR EXISTS(SELECT 1 FROM certificats c WHERE c.project_id=${locked.projectId}
+        AND c.contractor_id=${locked.contractorId} AND c.status <> 'superseded'
+        AND ${sql.raw(certificateProtectsQuotation(String(Number(devisId))))})
       OR EXISTS(SELECT 1 FROM devis_line_contexts c JOIN devis_line_items l ON l.id=c.devis_line_item_id WHERE l.devis_id=${devisId})
       OR EXISTS(SELECT 1 FROM devis_line_context_assets c JOIN devis_line_items l ON l.id=c.devis_line_item_id WHERE l.devis_id=${devisId})
       OR EXISTS(SELECT 1 FROM devis_checks c JOIN devis_line_items l ON l.id=c.line_item_id WHERE l.devis_id=${devisId})
@@ -347,7 +355,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
         status: 409,
         data: {
           message:
-            "This devis already has invoices attached, so its line items can't be re-scraped without losing certified history. Delete the invoices first if you really need a fresh extraction.",
+             "This quotation has linked invoices. Its financial history is protected; use the working quotation editor for wording corrections.",
           code: RESCRAPE_ERROR_CODES.HAS_INVOICES,
         },
       };
@@ -371,7 +379,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
         status: 409,
         data: {
           message:
-            "Some line items on this devis are already referenced by progress claims (situations). Re-scraping would break that history. Detach or delete those situations first.",
+             "This quotation has linked progress claims. Its financial history is protected; use the working quotation editor for wording corrections.",
           code: RESCRAPE_ERROR_CODES.HAS_SITUATIONS,
         },
       };
@@ -397,7 +405,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
           'beforeTranslation',(SELECT to_jsonb(t) FROM devis_translations t WHERE t.devis_id=${devisId}),
           'candidate',${JSON.stringify(parsed)}::jsonb,
           'humanReview',${JSON.stringify(approval ?? null)}::jsonb,
-          'sourceDigest',${createHash("sha256").update(buffer).digest("hex")})
+           'sourceDigest',${createHash("sha256").update(buffer).digest("hex")}::text)
       FROM devis d WHERE d.id=${devisId}`);
     await tx.execute(sql`UPDATE devis_translations SET status='pending',line_translations=NULL,
       translated_pdf_storage_key=NULL,combined_pdf_storage_key=NULL,contexts_version=contexts_version+1,
@@ -419,10 +427,13 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
         validationWarnings: allWarnings,
         aiExtractedData: parsed,
         aiConfidence: validation.confidenceScore,
-        // Task #225 — Re-capture banking on every rescrape; user may have
-        // re-uploaded a corrected PDF with the right IBAN.
-        extractedIban: safeExtractIban(parsed.iban),
-        extractedBic: safeExtractBic(parsed.bic),
+        // A table-only reader has not inspected banking metadata. The source
+        // digest and storage key were checked above; retain evidence from that
+        // unchanged PDF rather than silently clearing a banking-mismatch gate.
+        extractedIban: parsed.nativeTableRecovery?.metadataScope === "table_only"
+          ? locked.extractedIban : safeExtractIban(parsed.iban),
+        extractedBic: parsed.nativeTableRecovery?.metadataScope === "table_only"
+          ? locked.extractedBic : safeExtractBic(parsed.bic),
       })
       .where(sql`${devisTable.id} = ${devisId}`);
 
@@ -452,10 +463,10 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
         return {
           devisId,
           lineNumber: i + 1,
-          description: parsed.quotationVerification ? li.description : toSentenceCase(li.description || `Line ${i + 1}`) as string,
+          description: parsed.quotationVerification || parsed.nativeTableRecovery ? li.description : toSentenceCase(li.description || `Line ${i + 1}`) as string,
           quantity: String(li.quantity ?? 1),
           unit: li.unit || "u",
-          unitPriceHt: String(roundCurrency(li.unitPrice ?? 0)),
+           unitPriceHt: li.unitPrice == null ? null : String(roundCurrency(li.unitPrice)),
           totalHt: String(roundCurrency(li.total ?? 0)),
           percentComplete: "0",
           pdfPageHint,
@@ -471,7 +482,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
         jsonb_build_object('afterLines',(SELECT jsonb_agg(to_jsonb(l) ORDER BY l.line_number)
           FROM devis_line_items l WHERE l.devis_id=${devisId}),
           'sourceSections',${JSON.stringify(parsed.quotationVerification?.manifest?.sections ?? [])}::jsonb,
-          'sourceDigest',${createHash("sha256").update(buffer).digest("hex")})`);
+           'sourceDigest',${createHash("sha256").update(buffer).digest("hex")}::text)`);
     }
 
     return { kind: "ok", lineItemsCreated, lineItemsRemoved };

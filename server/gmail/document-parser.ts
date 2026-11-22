@@ -69,7 +69,9 @@ export interface ParsedDocument {
   pricedItemVerification?: PricedEvidence;
   /** Native table recovery, never model-authored or a human approval. */
   nativeTableRecovery?: {
-    parser: "poste-table-v1" | "numbered-table-v1";
+    /** Unexamined header metadata must not overwrite previously extracted evidence. */
+    metadataScope?: "table_only";
+    parser: "poste-table-v1" | "numbered-table-v2";
     sourceDigest: string;
     initialLineItems: ParsedDocument["lineItems"];
     evidence: Array<{ pages: number[]; priceText: string; sourceText: string }>;
@@ -256,6 +258,8 @@ export interface RelatedDocumentReference {
 }
 
 export interface ExtractionCoverage {
+  /** All pages independently read by the strict native-table parser. */
+  nativeTextPageCount?: number;
   /** Authoritative page count from pdfinfo; null when the PDF was too broken
    *  for pdfinfo (legacy lenient path). */
   pdfPageCount: number | null;
@@ -2531,6 +2535,9 @@ export function mergeChunkedParses(
 }
 
 export interface ParseDocumentDeps {
+  /** Existing quotation identity is already known; native recovery may skip AI metadata. */
+  preferNativeQuotationRecovery?: boolean;
+  getPdfPageCount?: (pdfBuffer: Buffer) => Promise<number | null>;
   pdfToImages?: (pdfBuffer: Buffer) => Promise<Buffer[]>;
   /** Task #350 — preferred raster dep: returns the authoritative page count
    *  alongside the rendered pages. Falls back to pdfToImages when absent. */
@@ -2597,6 +2604,37 @@ async function parseDocumentWithinBudget(
           }
         : (buf: Buffer) => pdfToImagesWithCoverage(buf));
   const _getPageTexts = deps.getPageTexts ?? getPageTextsFromBuffer;
+
+  // Supported native tables do not depend on a model or image rendering.
+  if (deps.preferNativeQuotationRecovery) try {
+  const nativePageCount = await (deps.getPdfPageCount ?? getPdfPageCount)(pdfBuffer);
+  if (nativePageCount && nativePageCount <= 80) {
+    const texts = await _getPageTexts(pdfBuffer, nativePageCount);
+    const identity = texts[0]?.match(/Réf\.\s*Devis\s*:\s*(\S+)/i);
+    const native = identity && texts.length === nativePageCount ? recoverNumberedTable(texts) : null;
+    if (native) {
+      const result: ParsedDocument = {
+        documentType: "quotation", devisNumber: identity![1], reference: identity![1],
+        lineItems: native.rows, amountHt: native.amountHt, amountTtc: native.amountTtc,
+        tvaAmount: Math.round((native.amountTtc - native.amountHt) * 100) / 100,
+        tvaRate: native.tvaRate,
+        rawText: texts.join("\n"),
+        nativeTableRecovery: { parser: "numbered-table-v2", metadataScope: "table_only",
+          sourceDigest: quotationHash("sha256").update(pdfBuffer).digest("hex"),
+          initialLineItems: [], evidence: native.evidence, amountHt: native.amountHt, amountTtc: native.amountTtc },
+        extractionCoverage: { pdfPageCount: nativePageCount, nativeTextPageCount: nativePageCount,
+          renderedPageCount: 0, chunkCount: 0,
+          pageEvidence: texts.map((text, i) => ({ page: i + 1, hasTextLayer: !!text?.trim(),
+            candidateRows: native.rows.filter(r => r.pageHint === i + 1).length })) },
+      };
+      result.pricedItemVerification = collectPricedEvidence(result, pdfBuffer);
+      return result;
+    }
+  }
+  } catch {
+    // Unsupported or unavailable text extraction retains the existing vision path.
+    console.warn("[DocumentParser] Native table recovery unavailable; continuing with image extraction.");
+  }
 
   let images: Buffer[];
   let pdfPageCount: number | null;
@@ -2926,7 +2964,7 @@ async function parseDocumentWithinBudget(
       const native = numberedRecovery ?? recoverPosteTable(pageTexts);
       if (native && pageTexts.length === images.length && pdfPageCount === images.length) {
         parsed.nativeTableRecovery = {
-          parser: numberedRecovery ? "numbered-table-v1" : "poste-table-v1",
+          parser: numberedRecovery ? "numbered-table-v2" : "poste-table-v1",
           sourceDigest: quotationHash("sha256").update(pdfBuffer).digest("hex"),
           initialLineItems: structuredClone(parsed.lineItems),
           evidence: native.evidence, amountHt: native.amountHt, amountTtc: native.amountTtc,
@@ -2936,6 +2974,7 @@ async function parseDocumentWithinBudget(
         parsed.amountTtc = native.amountTtc;
         parsed.tvaAmount = Math.round((native.amountTtc - native.amountHt) * 100) / 100;
         if (numberedRecovery) {
+          parsed.tvaRate = numberedRecovery.tvaRate;
           // The strict reader accounts for every section and recap. Recap
           // prices are not evidence of additional work on the summary page.
           pageEvidence = pageTexts.map((text, index) => ({

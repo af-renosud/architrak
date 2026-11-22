@@ -184,7 +184,7 @@ export function checkExtractionCompleteness(input: CompletenessInput): Validatio
 
   const { pdfPageCount, renderedPageCount, pageEvidence } = coverage;
 
-  if (pdfPageCount != null && renderedPageCount < pdfPageCount) {
+  if (pdfPageCount != null && renderedPageCount < pdfPageCount && coverage.nativeTextPageCount !== pdfPageCount) {
     warnings.push({
       field: "pageCoverage",
       expected: pdfPageCount,

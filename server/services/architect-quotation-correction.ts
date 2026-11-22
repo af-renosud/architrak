@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { certificateProtectsQuotation } from "./quotation-certificate-protection";
 import { extractedSourceTotal } from "./quotation-source-total-suggestion";
 import { quotationParagraph } from "../../shared/quotation-paragraph";
 import { PDFDocument } from "pdf-lib";
@@ -18,8 +19,17 @@ export class ArchitectCorrectionError extends Error {
 type Reader = Pick<pg.PoolClient, "query">;
 interface State { quotation: any; lines: any[]; translation: any; baseline: any; state: any; archived: boolean; financial: boolean }
 async function load(client: Reader, devisId: number, lock = false): Promise<State> {
+  let lockedIdentity: { project_id: number; contractor_id: number } | undefined;
+  if (lock) {
+    const identity = (await client.query("SELECT project_id,contractor_id FROM devis WHERE id=$1", [devisId])).rows[0];
+    if (!identity) throw new ArchitectCorrectionError("Quotation not found.", 404);
+    await client.query("SELECT pg_advisory_xact_lock($1,$2)", [identity.project_id, identity.contractor_id]);
+    lockedIdentity = identity;
+  }
   const quotation = (await client.query(`SELECT * FROM devis WHERE id=$1${lock ? " FOR UPDATE" : ""}`, [devisId])).rows[0];
   if (!quotation) throw new ArchitectCorrectionError("Quotation not found.", 404);
+  if (lockedIdentity && (lockedIdentity.project_id !== quotation.project_id || lockedIdentity.contractor_id !== quotation.contractor_id))
+    throw new ArchitectCorrectionError("Quotation ownership changed. Reopen the editor.");
   const project = (await client.query(`SELECT archived_at FROM projects WHERE id=$1${lock ? " FOR SHARE" : ""}`, [quotation.project_id])).rows[0];
   if (!project) throw new ArchitectCorrectionError("Project not found.", 404);
   const lines = (await client.query(`SELECT * FROM devis_line_items WHERE devis_id=$1 ORDER BY line_number,id${lock ? " FOR UPDATE" : ""}`, [devisId])).rows;
@@ -30,7 +40,8 @@ async function load(client: Reader, devisId: number, lock = false): Promise<Stat
     EXISTS(SELECT 1 FROM invoices WHERE devis_id=$1)
     OR EXISTS(SELECT 1 FROM situations WHERE devis_id=$1)
     OR EXISTS(SELECT 1 FROM acompte_no_invoice_payments WHERE devis_id=$1)
-    OR EXISTS(SELECT 1 FROM certificats WHERE project_id=$2 AND contractor_id=$3 AND status <> 'superseded')
+    OR EXISTS(SELECT 1 FROM certificats c WHERE c.project_id=$2 AND c.contractor_id=$3
+      AND c.status <> 'superseded' AND ${certificateProtectsQuotation("$1")})
     OR EXISTS(SELECT 1 FROM situation_lines sl JOIN devis_line_items l ON l.id=sl.devis_line_item_id WHERE l.devis_id=$1)
     AS present`, [devisId, quotation.project_id, quotation.contractor_id])).rows[0]?.present;
   return { quotation, lines, translation, baseline, state, archived: !!project.archived_at, financial: !!financial };
