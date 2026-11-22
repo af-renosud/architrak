@@ -34,6 +34,50 @@ production correction constants. Section text is retained with the following
 work item. Unpriced unit prices persist as null, with original blank-column
 evidence retained; non-null line totals still use zero contribution.
 
-The broader background-job recovery, incomplete-draft workflow and final
-integrated browser/pre-publish verification remain separate planned work.
-Publication and application to the live quotation require explicit actions.
+## Integrated release verification
+
+The private-source scenario also saves draft English wording and overview
+context through the actual correction service, reopens it, saves rich line
+context through the transactional storage method, and rejects stale versions.
+Original French rows, stable IDs, amounts and unrelated paid evidence survive.
+Draft translation preparation is eligible; incomplete English does not qualify
+for approval. This verifies persistence, not the quality of a generated English
+translation: no fresh provider translation was requested in this scenario.
+
+The background-job suite covers persisted checkpoints, owner fencing, retries
+and interrupted runs. Strict parser tests reject incomplete layouts, missing
+charges and inconsistent totals while retaining section qualifications.
+The integrated browser journey checked selective wording recovery, save/reopen,
+indicative source-reviewed budgets, and unchanged financial/approval state.
+It found a false own-save conflict; a narrow repeat confirmed its resolution.
+
+The full pre-publish gate passed after approval fixtures were corrected to
+contain English wording: dependency audit, currency conventions, TypeScript,
+3,844 tests (17 skipped), production build including schema/migration checks,
+and production-bundle health check with clean shutdown. Opt-in private-source
+tests were run separately because the PDF must not be committed.
+
+### Publication and live recovery
+
+1. Publish the verified revision yourself. Local checks do not publish it.
+2. Open the existing Massey DV261090 quotation, not a new duplicate upload.
+3. Choose re-scrape/preparation. Leave the panel while it works; the current
+   quotation does not change merely because a candidate is ready.
+4. Compare the prepared rows and source passages against the original PDF.
+   The isolated source gave HT 412,465.90 and TTC 453,712.49 across 167 rows,
+   one unpriced. Matching totals alone are not permission to apply.
+5. If the quotation still has no protected edits or financial links, explicitly
+   approve and apply the reviewed candidate. If protection now prevents full
+   replacement, preserve it and use selective wording recovery; never remove
+   evidence to force application.
+6. Review/save English and context, then use the normal approval checklist.
+   Client sharing, signing and emails remain separate deliberate actions.
+
+### Read-only checks after publication
+
+Confirm the published revision is healthy, inspect extraction job state and
+candidate provenance, and compare live totals/row count only after the operator
+has applied the candidate. Check the original PDF is unchanged and the unrelated
+paid certificate is untouched. Verify saved context survives reopening.
+Do not create a baseline, apply a candidate, approve, send or sign as part of
+this read-only verification.

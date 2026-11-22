@@ -48,7 +48,11 @@ vi.mock("../storage", () => ({
       const { eq } = await import("drizzle-orm");
       return state.db.select().from(devisLineItems).where(eq(devisLineItems.devisId, id)).orderBy(devisLineItems.lineNumber);
     },
-    getDevisTranslation: async () => undefined,
+    getDevisTranslation: async (id: number) => {
+      const { devisTranslations } = await import("../../shared/schema");
+      const { eq } = await import("drizzle-orm");
+      return (await state.db.select().from(devisTranslations).where(eq(devisTranslations.devisId, id)))[0];
+    },
     getDevisLineContextAssetsByDevis: async () => [],
   },
 }));
@@ -63,12 +67,12 @@ const enabled = !!process.env.RECOVERY_SOURCE_PDF && !!process.env.DATABASE_URL;
     await admin.query(`CREATE SCHEMA "${schema}"`);
     state.pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, options: `-c search_path=${schema}` });
     state.db = drizzle(state.pool);
-    for (const table of ["projects", "devis", "devis_line_items", "devis_translations",
+    for (const table of ["users", "quotation_architect_audit", "projects", "devis", "devis_line_items", "devis_translations",
       "quotation_source_baselines", "quotation_architect_state", "quotation_extraction_events",
       "duplicate_extraction_audit", "extraction_row_corrections", "acompte_no_invoice_payments",
       "certificats", "certificat_sources", "invoices", "situations", "situation_lines",
       "devis_line_contexts", "devis_line_context_assets", "devis_checks", "client_checks"]) {
-      await state.pool.query(`CREATE TABLE "${table}" (LIKE public."${table}" INCLUDING DEFAULTS)`);
+      await state.pool.query(`CREATE TABLE "${table}" (LIKE public."${table}" INCLUDING DEFAULTS INCLUDING INDEXES)`);
       const columns = await state.pool.query(`SELECT column_name FROM information_schema.columns
         WHERE table_schema=$1 AND table_name=$2 AND column_default LIKE 'nextval(%'`, [schema, table]);
       for (const { column_name: column } of columns.rows) {
@@ -91,6 +95,7 @@ const enabled = !!process.env.RECOVERY_SOURCE_PDF && !!process.env.DATABASE_URL;
   });
   beforeEach(async () => {
     await state.pool.query(`DELETE FROM devis_line_items; DELETE FROM quotation_extraction_events;
+      DELETE FROM quotation_architect_audit; DELETE FROM quotation_architect_state; DELETE FROM devis_translations;
       DELETE FROM devis_line_contexts; DELETE FROM quotation_source_baselines;
       UPDATE devis SET amount_ht=0,amount_ttc=0,ai_extracted_data=NULL,
         extracted_iban='DE89370400440532013000',extracted_bic='COBADEFFXXX' WHERE id=56;
@@ -107,6 +112,9 @@ const enabled = !!process.env.RECOVERY_SOURCE_PDF && !!process.env.DATABASE_URL;
     const result = await rescrapeDevis(56, { attemptId: attempt, actorId: 1, reason: "Isolated source review" });
     expect(result.success).toBe(true);
     const extraction = prepared.data.extraction as any;
+    expect(extraction.lineItems).toHaveLength(167);
+    expect(extraction.amountHt).toBe(412465.90);
+    expect(extraction.amountTtc).toBe(453712.49);
     expect(extraction.nativeTableRecovery.parser).toBe("numbered-table-v2");
     expect(extraction.extractionCoverage.chunkCount).toBe(0);
     expect(extraction.extractionCoverage.renderedPageCount).toBe(0);
@@ -125,6 +133,41 @@ const enabled = !!process.env.RECOVERY_SOURCE_PDF && !!process.env.DATABASE_URL;
       docKind: "devis", docId: 56, docIban: "DE89370400440532013000",
     }));
     expect((await state.pool.query("SELECT status FROM certificats WHERE id=5")).rows[0].status).toBe("paid");
+    // Continue the actual source through the working editor's service, not just
+    // parser output. No live model, email, signing or production mutation.
+    const { createArchitectCorrectionService } = await import("../services/architect-quotation-correction");
+    const editor = createArchitectCorrectionService({ pool: state.pool, readPdf: async () => state.bytes });
+    const before = await editor.get(56);
+    const draft = structuredClone(before.draft);
+    draft.headerEn = "Renovation works";
+    draft.summaryEn = "Draft context for the client's review; original specifications remain authoritative.";
+    draft.lines[0].descriptionEn = "Preliminary site works — draft translation for review.";
+    const saved = await editor.save(56, { ...draft, expectedVersion: before.version }, 1);
+    const reopened = await editor.get(56);
+    expect(reopened.draft.summaryEn).toBe(draft.summaryEn);
+    expect(reopened.draft.lines[0].descriptionEn).toBe(draft.lines[0].descriptionEn);
+    expect(reopened.draft.lines.map(l => [l.id, l.descriptionFr, l.totalHt])).toEqual(
+      before.draft.lines.map(l => [l.id, l.descriptionFr, l.totalHt]));
+    expect(saved.version).not.toBe(before.version);
+    await expect(editor.save(56, { ...draft, expectedVersion: before.version }, 1)).rejects.toThrow("changed");
+    const { storage: realStorage } = await vi.importActual<typeof import("../storage")>("../storage");
+    const context = { type: "doc", content: [{ type: "paragraph", content: [
+      { type: "text", text: "Context saved independently of extraction." },
+    ] }] };
+    const lineId = reopened.draft.lines[0].id!;
+    expect(await realStorage.saveDevisLineContextGuarded(56, lineId, context, 0)).toMatchObject({ outcome: "saved" });
+    expect(await realStorage.getDevisLineContexts(56)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ devisLineItemId: lineId, document: context }),
+    ]));
+    expect(await realStorage.saveDevisLineContextGuarded(56, lineId, context, 0)).toEqual({ outcome: "stale_create" });
+    const { loadQuotationDecisionSnapshot } = await import("../services/quotation-decision-snapshot");
+    const { evaluateQuotationDecision } = await import("../services/quotation-decision");
+    const decision = (await loadQuotationDecisionSnapshot(56))!;
+    expect((await evaluateQuotationDecision(decision, "prepare_translation")).allowed).toBe(true);
+    expect((await evaluateQuotationDecision(decision, "approve")).allowed).toBe(false);
+    expect((await state.pool.query("SELECT amount_ht,amount_ttc FROM devis WHERE id=56")).rows[0]).toEqual({
+      amount_ht: quote.amount_ht, amount_ttc: quote.amount_ttc,
+    });
   }, 60000);
   it.each(["related invoice", "legacy scope", "stale quotation", "new baseline"])(
     "preserves the draft when blocked by %s", async (scenario) => {
