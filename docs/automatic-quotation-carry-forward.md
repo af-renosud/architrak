@@ -14,8 +14,8 @@ Once an architect designates the old and new quotation, the replacement operatio
 
 ## Operator steps
 
-1. Ensure the replacement has its recovered items applied. Preparing a re-scrape alone does not apply its rows or figures.
-2. Use **Replace quotation** on the earlier quotation and select the revised quotation.
+1. Use **Replace quotation** on the earlier quotation and select the revised quotation.
+2. If its extraction is prepared but not applied, choose **Approve prepared extraction and replace together**. Review the candidate and original PDF, then confirm. Applying the recovered figures and recording the replacement are one transaction: either both succeed or neither changes. No further re-scrape is needed for an eligible prepared candidate.
 3. The retention view reports automatic matches. Only changed, ambiguous or conflicting items need manual decisions. Setup, document overview and supporting PDFs remain optional explicit choices.
 4. Confirm the replacement. The old quotation becomes historical; the new one keeps its own figures.
 
@@ -25,7 +25,9 @@ Later recovery remains available in **Review previous work**. It is explicit rec
 
 Edited rows whose earlier source identity cannot be established are not automatically mapped by price or position alone. This is particularly relevant to older records that predate detailed correction history. Automatic retention is not a promise that every old row can be safely mapped.
 
-The existing extraction-review/apply operation and replacement operation remain separate. This change does not silently apply prepared production candidates or mutate live quotation records when published.
+Standalone extraction review remains available. The combined replacement path uses its same source, stale-version and financial-protection checks; it cannot overwrite an edited replacement. Publishing does not silently apply prepared production candidates or mutate live quotation records.
+
+Newly created working rows retain an immutable initial-row snapshot tied to their original PDF. Later edits can therefore be matched against the initial source rather than losing that identity. Legacy rows without such evidence still require explicit assignment.
 
 ## Verification
 

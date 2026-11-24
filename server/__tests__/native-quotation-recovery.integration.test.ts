@@ -67,7 +67,9 @@ const enabled = !!process.env.RECOVERY_SOURCE_PDF && !!process.env.DATABASE_URL;
     await admin.query(`CREATE SCHEMA "${schema}"`);
     state.pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, options: `-c search_path=${schema}` });
     state.db = drizzle(state.pool);
-    for (const table of ["users", "quotation_architect_audit", "projects", "devis", "devis_line_items", "devis_translations",
+    for (const table of ["users", "contractors", "devis_replacements", "accounting_state_changes", "marches",
+      "marche_documents", "certificat_payments",
+      "devis_supporting_pdfs", "quotation_architect_audit", "projects", "devis", "devis_line_items", "devis_translations",
       "quotation_source_baselines", "quotation_architect_state", "quotation_extraction_events",
       "duplicate_extraction_audit", "extraction_row_corrections", "acompte_no_invoice_payments",
       "certificats", "certificat_sources", "invoices", "situations", "situation_lines",
@@ -94,7 +96,8 @@ const enabled = !!process.env.RECOVERY_SOURCE_PDF && !!process.env.DATABASE_URL;
     if (admin) { await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); await admin.end(); }
   });
   beforeEach(async () => {
-    await state.pool.query(`DELETE FROM devis_line_items; DELETE FROM quotation_extraction_events;
+    await state.pool.query(`DELETE FROM devis_replacements; DELETE FROM accounting_state_changes;
+      DELETE FROM devis WHERE id<>56; DELETE FROM devis_line_items; DELETE FROM quotation_extraction_events;
       DELETE FROM quotation_architect_audit; DELETE FROM quotation_architect_state; DELETE FROM devis_translations;
       DELETE FROM devis_line_contexts; DELETE FROM quotation_source_baselines;
       UPDATE devis SET amount_ht=0,amount_ttc=0,ai_extracted_data=NULL,
@@ -103,6 +106,39 @@ const enabled = !!process.env.RECOVERY_SOURCE_PDF && !!process.env.DATABASE_URL;
       DELETE FROM certificat_sources;
       INSERT INTO certificat_sources(certificat_id,invoice_id) VALUES(5,6);`);
   });
+  it.each([false, true])("applies and replaces as one transaction (late rollback=%s)", async (failLate) => {
+    const { rescrapeDevis } = await import("../services/devis-rescrape.service");
+    expect((await rescrapeDevis(56)).data.prepared).toBe(true);
+    const prepared = (await state.pool.query("SELECT id,snapshot FROM quotation_extraction_events WHERE outcome='prepared'")).rows[0];
+    await state.pool.query(`INSERT INTO users(id,email,google_id) VALUES(1,'fixture@example.test','fixture') ON CONFLICT DO NOTHING;
+      INSERT INTO contractors(id,name) VALUES(1,'Fixture') ON CONFLICT DO NOTHING;
+      INSERT INTO devis(id,project_id,contractor_id,devis_code,description_fr,amount_ht,amount_ttc,status,pdf_storage_key)
+        VALUES(51,1,1,'OLD','Previous source',100,110,'draft','old.pdf')`);
+    const { getReplacementOptions, replaceQuotation } = await import("../services/quotation-replacement.service");
+    const options = await getReplacementOptions(51);
+    if (failLate) await state.pool.query(`CREATE FUNCTION reject_replacement_test() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.id=51 AND NEW.accounting_state='superseded' THEN RAISE EXCEPTION 'test late failure'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER reject_replacement_test BEFORE UPDATE ON devis FOR EACH ROW EXECUTE FUNCTION reject_replacement_test()`);
+    try {
+      const operation = replaceQuotation(51, {
+        replacementDevisId: 56, sourceVersion: options.source.version,
+        targetVersion: options.candidates.find(c => c.id===56)!.version, impactVersion: options.impactVersion,
+        note: "Revised contractor scope", differentContractorAcknowledged: false,
+        preparedExtraction: { attemptId: prepared.id, reason: "Original source reviewed", reviewedOriginal: true,
+          initialDifferencesAreOcrErrors: true },
+      }, 1);
+      if (failLate) await expect(operation).rejects.toThrow();
+      else await expect(operation).resolves.toMatchObject({ ok: true });
+      const target = (await state.pool.query("SELECT amount_ht FROM devis WHERE id=56")).rows[0];
+      expect(Number(target.amount_ht)).toBe(failLate ? 0 : 412465.90);
+      const history = (await state.pool.query("SELECT count(*)::int n FROM devis_replacements")).rows[0].n;
+      expect(history).toBe(failLate ? 0 : 1);
+      const rows = (await state.pool.query("SELECT count(*)::int n FROM devis_line_items WHERE devis_id=56")).rows[0].n;
+      expect(rows).toBe(failLate ? 0 : 167);
+    } finally {
+      if (failLate) await state.pool.query("DROP TRIGGER reject_replacement_test ON devis; DROP FUNCTION reject_replacement_test()");
+    }
+  }, 60000);
   it("prepares without mutation and applies explicitly despite an unrelated certificate", async () => {
     const { rescrapeDevis } = await import("../services/devis-rescrape.service");
     const prepared = await rescrapeDevis(56);

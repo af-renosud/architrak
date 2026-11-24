@@ -2012,8 +2012,16 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createDevisLineItem(data: InsertDevisLineItem): Promise<DevisLineItem> {
-    const [item] = await db.insert(devisLineItems).values({ ...data, description: quotationParagraph(data.description) }).returning();
-    return item;
+    return db.transaction(async tx => {
+      const [item] = await tx.insert(devisLineItems).values({ ...data, description: quotationParagraph(data.description) }).returning();
+      // Preserve the initial stable-row binding before any wording edits. This
+      // is evidence for later exact matching, not an approval or price override.
+      await tx.execute(sql`INSERT INTO quotation_extraction_events(devis_id,kind,outcome,snapshot)
+        SELECT ${item.devisId},'attempt','source_row_saved',
+          jsonb_build_object('sourceKey',d.pdf_storage_key,'originalLine',${JSON.stringify(item)}::jsonb)
+        FROM devis d WHERE d.id=${item.devisId}`);
+      return item;
+    });
   }
 
   async updateDevisLineItem(id: number, data: Partial<InsertDevisLineItem>): Promise<DevisLineItem | undefined> {

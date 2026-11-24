@@ -24,7 +24,7 @@ function label(value: string | null, names: Record<string, string>) {
   return value ? names[value] ?? value.replace(/_/g, " ") : "Not stated";
 }
 // Unknown evidence is displayed as text, never interpreted as HTML or a verdict.
-function EvidenceValue({ value }: { value: unknown }) {
+export function EvidenceValue({ value }: { value: unknown }) {
   if (value == null) return <span className="text-muted-foreground">Not stated</span>;
   if (Array.isArray(value)) return <ul className="space-y-2">{value.map((item, index) =>
     <li key={index} className="border-l border-border pl-2"><EvidenceValue value={item} /></li>)}</ul>;

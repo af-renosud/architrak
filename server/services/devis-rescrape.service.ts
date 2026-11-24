@@ -70,15 +70,17 @@ interface RescrapeResult {
  * transaction that rolls back on any error — no partial state, no
  * duplicated line numbers under concurrent submits.
  */
-export async function rescrapeDevis(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }, assertOwner?: () => Promise<void>, eventWriter: typeof recordExtractionEvent = recordExtractionEvent, checkpoint?: ParseDocumentDeps["checkpoint"]): Promise<RescrapeResult> {
-  try { return await runRescrape(devisId, approval, assertOwner, eventWriter, checkpoint); }
+type ApplyTransaction = import("../storage").DbTransaction;
+export async function rescrapeDevis(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }, assertOwner?: () => Promise<void>, eventWriter: typeof recordExtractionEvent = recordExtractionEvent, checkpoint?: ParseDocumentDeps["checkpoint"], applyTransaction?: ApplyTransaction): Promise<RescrapeResult> {
+  if (applyTransaction && !approval) throw new Error("A combined replacement requires a prepared extraction.");
+  try { return await runRescrape(devisId, approval, assertOwner, eventWriter, checkpoint, applyTransaction); }
   catch (error) {
     await eventWriter(devisId, "attempt", "failed", { category: "unavailable" });
     throw error;
   }
 }
 
-async function runRescrape(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }, assertOwner?: () => Promise<void>, eventWriter: typeof recordExtractionEvent = recordExtractionEvent, checkpoint?: ParseDocumentDeps["checkpoint"]): Promise<RescrapeResult> {
+async function runRescrape(devisId: number, approval?: { attemptId: number; actorId: number; reason: string }, assertOwner?: () => Promise<void>, eventWriter: typeof recordExtractionEvent = recordExtractionEvent, checkpoint?: ParseDocumentDeps["checkpoint"], applyTransaction?: ApplyTransaction): Promise<RescrapeResult> {
   // ----- Phase 1: load + parse OUTSIDE the transaction. -----
   // The Gemini call can take several seconds; we don't want it holding a
   // row lock that long.
@@ -259,7 +261,7 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
   // storage keys so phase 3 can clean the stored objects post-commit.
   let contextAssetsToClean: Awaited<ReturnType<typeof storage.getDevisLineContextAssetsByDevis>> = [];
 
-  const txResult: TxResult = await db.transaction(async (tx) => {
+  const apply = async (tx: ApplyTransaction): Promise<TxResult> => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${initial.projectId}, ${initial.contractorId})`);
     // Pessimistic lock on the devis row — serialises concurrent rescrape /
     // confirm / status mutations on the same devis.
@@ -487,13 +489,22 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
     }
 
     return { kind: "ok", lineItemsCreated, lineItemsRemoved };
-  });
+  };
+  const txResult = applyTransaction ? await apply(applyTransaction) : await db.transaction(apply);
 
   if (txResult.kind === "blocked") {
     await eventWriter(devisId, "attempt", "failed", txResult.data);
     return { success: false, status: txResult.status, data: txResult.data };
   }
   await eventWriter(devisId, "attempt", "succeeded");
+
+  // The replacement caller owns commit and rollback. In particular, never
+  // start translation or delete stored assets before that outer commit.
+  if (applyTransaction) {
+    return { success: true, status: 200, data: {
+      extraction: { lineItemsCreated: txResult.lineItemsCreated, lineItemsRemoved: txResult.lineItemsRemoved },
+    } };
+  }
 
   // ----- Phase 3: best-effort post-commit hooks. -----
   // The line delete cascaded the context-asset rows; remove their stored

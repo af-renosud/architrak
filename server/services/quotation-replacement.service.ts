@@ -17,6 +17,12 @@ export const replaceQuotationSchema = z.object({
   impactVersion: z.string().min(1),
   differentContractorAcknowledged: z.boolean().default(false),
   carryForward: carryForwardSchema.optional(),
+  preparedExtraction: z.object({
+    attemptId: z.number().int().positive(),
+    reviewedOriginal: z.literal(true),
+    initialDifferencesAreOcrErrors: z.literal(true),
+    reason: z.string().trim().min(12).max(4000),
+  }).strict().optional(),
 }).strict();
 
 export class ReplacementError extends Error {
@@ -113,6 +119,9 @@ export async function getReplacementHistory(projectId: number): Promise<Quotatio
 
 export async function replaceQuotation(id: number, input: z.infer<typeof replaceQuotationSchema>, actorId: number) {
   const data = replaceQuotationSchema.parse(input);
+  if (data.preparedExtraction && data.carryForward) {
+    throw new ReplacementError(400, "INVALID_CARRY_SELECTION", "Prepared replacements retain exact matches automatically. Additional work can be recovered afterwards.");
+  }
   if (id === data.replacementDevisId) throw new ReplacementError(400, "SELF_REPLACEMENT", "Choose a different quotation.");
   const uploaded: string[] = [];
   try {
@@ -128,9 +137,19 @@ export async function replaceQuotation(id: number, input: z.infer<typeof replace
     // Project lock serializes the whole replacement graph and archive changes.
     const [project] = await tx.select().from(projects).where(eq(projects.id, initial.projectId)).for("update");
     if (!project || project.archivedAt || project.status === "archived") throw new ReplacementError(409, "PROJECT_ARCHIVED", "Archived projects are read-only.");
+    if (data.preparedExtraction) {
+      const [candidate] = await tx.select().from(devis).where(eq(devis.id, data.replacementDevisId));
+      if (!candidate || candidate.projectId !== initial.projectId) {
+        throw new ReplacementError(400, "INVALID_TARGET", "Choose a live quotation in the same project.");
+      }
+      // Re-scrape takes this lock before its row lock. Never wait for another
+      // extractor while holding quotation locks in the reverse order.
+      const lock = await tx.execute(sql`SELECT pg_try_advisory_xact_lock(${candidate.projectId},${candidate.contractorId}) AS acquired`);
+      if (!lock.rows[0]?.acquired) throw new ReplacementError(409, "QUOTATION_BUSY", "Extraction is still running. Wait for it to finish before replacing this quotation.");
+    }
     const rows = await tx.select().from(devis).where(inArray(devis.id, [id, data.replacementDevisId])).orderBy(asc(devis.id)).for("update");
     const source = rows.find(row => row.id === id)!;
-    const target = rows.find(row => row.id === data.replacementDevisId);
+    let target = rows.find(row => row.id === data.replacementDevisId);
     if (!target || target.projectId !== source.projectId) throw new ReplacementError(400, "INVALID_TARGET", "Choose a live quotation in the same project.");
     for (const row of [source, target]) {
       const reason = replacementBlockedReason(row);
@@ -143,7 +162,7 @@ export async function replaceQuotation(id: number, input: z.infer<typeof replace
       throw new ReplacementError(400, "CONTRACTOR_ACK_REQUIRED", "Confirm that you intend to replace this quotation with one from a different contractor.");
     }
     const history = await tx.select().from(devisReplacements).where(eq(devisReplacements.projectId, source.projectId));
-    if (history.some(h => h.oldDevisId === id || h.newDevisId === target.id)) {
+    if (history.some(h => h.oldDevisId === id || h.newDevisId === data.replacementDevisId)) {
       throw new ReplacementError(409, "ALREADY_LINKED", "One of these quotations already has a replacement relationship. Refresh and review its history.");
     }
     let cursor = target.id;
@@ -159,6 +178,19 @@ export async function replaceQuotation(id: number, input: z.infer<typeof replace
     if (impact.impactVersion !== data.impactVersion) throw new ReplacementError(409, "STALE_IMPACT", "Linked financial records changed. Review the impact again before confirming.");
     const [actor] = await tx.select().from(users).where(eq(users.id, actorId));
     if (!actor) throw new ReplacementError(401, "ACTOR_REQUIRED", "Sign in again before recording a replacement.");
+    if (data.preparedExtraction) {
+      // Both quotations, the project and signature guards are already locked.
+      // Applying and superseding are one commit, not two browser requests.
+      const { rescrapeDevis } = await import("./devis-rescrape.service");
+      const applied = await rescrapeDevis(target.id, { ...data.preparedExtraction, actorId },
+        undefined, async (devisId, kind, outcome, snapshot = {}) => {
+          await tx.execute(sql`INSERT INTO quotation_extraction_events(devis_id,kind,outcome,snapshot)
+            VALUES(${devisId},${kind},${outcome},${JSON.stringify(snapshot)}::jsonb)`);
+        }, undefined, tx);
+      if (!applied.success) throw new ReplacementError(applied.status, "EXTRACTION_NOT_APPLIED",
+        String(applied.data.message ?? "The prepared extraction could not be applied. Neither quotation was changed."));
+      [target] = await tx.select().from(devis).where(eq(devis.id, target.id));
+    }
     await retainReplacementWork(tx, source, target, data.carryForward, actorId, uploaded);
     const [retainedTarget] = await tx.select().from(devis).where(eq(devis.id, target.id));
     await tx.update(devis).set({ accountingState: "superseded", updatedAt: new Date() }).where(eq(devis.id, source.id));

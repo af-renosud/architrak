@@ -80,6 +80,29 @@ async function replace(f: Awaited<ReturnType<typeof fixture>>, carryForward?: Ca
 }
 
 describe("replacement carry-forward", () => {
+  it("preserves first-import identity before later wording edits", async () => {
+    const f = await fixture();
+    const { storage } = await import("../storage");
+    const original = { description: "Install oak shelf", quantity: 1, unit: "u", unitPrice: 50, total: 50 };
+    const [source] = await db.select().from(devis).where(eq(devis.id, f.source.id));
+    const [target] = await db.select().from(devis).where(eq(devis.id, f.target.id));
+    for (const quote of [source, target]) await db.update(devis).set({
+      pdfStorageKey: `/test/source-${quote.id}.pdf`,
+      aiExtractedData: { ...(quote.aiExtractedData as any), lineItems: [
+        ...((quote.aiExtractedData as any).lineItems ?? []), original,
+      ] },
+    }).where(eq(devis.id, quote.id));
+    const old = await storage.createDevisLineItem({ devisId: source.id, lineNumber: 2,
+      description: original.description, quantity: "1", unit: "u", unitPriceHt: "50", totalHt: "50" });
+    const next = await storage.createDevisLineItem({ devisId: target.id, lineNumber: 6,
+      description: original.description, quantity: "1", unit: "u", unitPriceHt: "50", totalHt: "50" });
+    await storage.updateDevisLineItem(old.id, { description: "Oak shelf with architect's retained wording" });
+    const preview = await getCarryForwardPreview(source.id, target.id);
+    expect(preview.sourceLines.find(l => l.id === old.id)?.suggestedTargetId).toBe(next.id);
+    await replace(f);
+    expect((await storage.getDevisLineItems(target.id)).find(l => l.id === next.id)?.description)
+      .toBe("Oak shelf with architect's retained wording");
+  });
   it("copies rich context, independent image bytes and translation by stable mapping, without source figures or approvals", async () => {
     const f = await fixture();
     const preview = await getCarryForwardPreview(f.source.id, f.target.id);

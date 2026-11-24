@@ -60,6 +60,9 @@ async function loadState(conn: Connection, sourceId: number, targetId: number, l
   const pdfs = await (lock ? pq.for("update") : pq);
   const audits = await conn.select().from(quotationArchitectAudit)
     .where(inArray(quotationArchitectAudit.devisId, ids)).orderBy(asc(quotationArchitectAudit.id));
+  const sourceHistory = await conn.execute<{ devis_id: number; snapshot: Record<string, any> }>(sql`
+    SELECT devis_id,snapshot FROM quotation_extraction_events
+    WHERE devis_id IN (${sourceId},${targetId}) AND outcome='source_row_saved' ORDER BY id`);
   const [project] = await conn.select().from(projects).where(eq(projects.id, source.projectId));
   const commitment = await conn.execute(sql`SELECT
     EXISTS(SELECT 1 FROM invoices WHERE devis_id=${targetId})
@@ -76,7 +79,7 @@ async function loadState(conn: Connection, sourceId: number, targetId: number, l
     sequence = Number(max.rows[0].next);
     code = composeDevisCode({ ...parsed, lotRef: source.lotRefText, lotSequence: sequence });
   }
-  return { source, target, tr, lines, contexts, assets, pdfs, audits, project, code, sequence, committed: !!commitment.rows[0]?.committed };
+  return { source, target, tr, lines, contexts, assets, pdfs, audits, sourceHistory: sourceHistory.rows, project, code, sequence, committed: !!commitment.rows[0]?.committed };
 }
 type State = Awaited<ReturnType<typeof loadState>>;
 const version = (s: State) => hash(s);
@@ -111,7 +114,10 @@ function lineViews(s: State, id: number): CarryLine[] {
     // Bind the stable row ID to the earliest recorded pre-edit source, then
     // require it to agree with immutable extraction evidence. Never align by
     // array position: additions and removals change positions.
-    const historic = s.audits.filter(a => a.devisId === id).flatMap(a => [
+    const imported = s.sourceHistory.find(event => event.devis_id === id
+      && quotation.pdfStorageKey && event.snapshot.sourceKey === quotation.pdfStorageKey
+      && event.snapshot.originalLine?.id === line.id)?.snapshot.originalLine;
+    const historic = imported ?? s.audits.filter(a => a.devisId === id).flatMap(a => [
       ...((a.beforeSnapshot as { lines?: any[] })?.lines ?? []),
       ...((a.afterSnapshot as any)?.wordingTransfers ?? []).map((transfer: any) => transfer.before),
     ].filter(row => row?.id === line.id))[0];

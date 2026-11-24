@@ -22,6 +22,12 @@ Legacy edited rows without a recoverable source identity must not be matched sol
 
 **How to apply:** Prefer immutable pre-edit history or unique source-page coordinates with matching figures. Keep unproven work on the previous version and expose it for explicit assignment rather than fabricating exact matches.
 
+Applying a prepared extraction as part of a replacement must be atomic with superseding the previous quotation.
+
+**Why:** A two-request sequence can leave recovered figures applied but the replacement incomplete, or retire the earlier quotation before its successor is usable.
+
+**How to apply:** Validate both reviewed versions, hold signature/project/quotation locks consistently, use one transaction, and defer translation and object cleanup until after commit.
+
 Translation context, especially embedded images, is the user's highest-value authored content. Preserve the complete rich document and saved image sizes, not just extracted text. Copies must own independent image bytes and asset identities.
 
 **Why:** The user identified recreating translation context and images as the biggest potential loss of time. Sharing the old asset ownership or storage key would let old-quotation cleanup break the new quotation.
