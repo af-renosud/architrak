@@ -8,13 +8,19 @@ The user also wants reusable architect-authored setup, descriptions, translation
 
 **Why:** Replacement should not force the architect to recreate work already invested in the preceding version.
 
-**How to apply:** Distinguish reusable authored content from contractor-source evidence and approvals. Carry forward explicitly with line matching and architect review; never copy signatures, financial history or stale approvals.
+**How to apply:** Once the architect designates the replacement, automatically carry forward authored descriptions, translations, amendments, context and images for uniquely matched unchanged source items, without per-item selection or confirmation. Distinguish reusable authored content from contractor-source evidence and approvals; never copy signatures, financial history or stale approvals.
+
+Zero-friction carry-forward for exact unchanged items is a central product requirement, not merely an optional suggestion list.
+
+**Why:** The user explicitly wants no operator input for unchanged items when a revised quotation adds or removes a few entries. Repeating prior work defeats the purpose of replacement.
+
+**How to apply:** Match underlying contractor-source content rather than requiring edited working descriptions to equal newly extracted text. Preserve the revised PDF's authority for scope and figures. Surface only changed, ambiguous or conflicting items for decisions; report automatic transfers without making acknowledgement another prerequisite.
 
 Translation context, especially embedded images, is the user's highest-value authored content. Preserve the complete rich document and saved image sizes, not just extracted text. Copies must own independent image bytes and asset identities.
 
 **Why:** The user identified recreating translation context and images as the biggest potential loss of time. Sharing the old asset ownership or storage key would let old-quotation cleanup break the new quotation.
 
-**How to apply:** Auto-suggest only unique unchanged lines; require explicit assignment for changed or ambiguous rows. Protect existing replacement content, retain unassigned work on the original with a later recovery path, and require draft review. Structured internal codes retain their descriptive name but need a distinct sequence because prior versions retain their identity.
+**How to apply:** Automatically transfer unique unchanged lines; require explicit assignment for changed or ambiguous rows. Protect existing replacement content, retain unassigned work on the original with a later recovery path, and do not impose repeat item review solely for automatic carry-forward. Structured internal codes retain their descriptive name but need a distinct sequence because prior versions retain their identity.
 
 **Why:** The user found conditional same-reference controls impossible to discover and explicitly rejected relying on AI to determine replacement where many items change.
 
