@@ -6,7 +6,7 @@ import { accountingStateChanges, contractors, devis, devisReplacements, projects
 import type { DbTransaction } from "../storage";
 import type { ReplacementOptions, ReplacementQuotation, QuotationReplacementHistory } from "@shared/quotation-replacement";
 import { carryForwardSchema } from "@shared/quotation-carry-forward";
-import { applyCarryForward, cleanupCarryObjects } from "./quotation-carry-forward";
+import { retainReplacementWork, cleanupCarryObjects } from "./quotation-carry-forward";
 
 export const REPLACEMENT_LOCK_NAMESPACE = 80101;
 export const replaceQuotationSchema = z.object({
@@ -159,7 +159,7 @@ export async function replaceQuotation(id: number, input: z.infer<typeof replace
     if (impact.impactVersion !== data.impactVersion) throw new ReplacementError(409, "STALE_IMPACT", "Linked financial records changed. Review the impact again before confirming.");
     const [actor] = await tx.select().from(users).where(eq(users.id, actorId));
     if (!actor) throw new ReplacementError(401, "ACTOR_REQUIRED", "Sign in again before recording a replacement.");
-    if (data.carryForward) await applyCarryForward(tx, source, target, data.carryForward, actorId, uploaded);
+    await retainReplacementWork(tx, source, target, data.carryForward, actorId, uploaded);
     const [retainedTarget] = await tx.select().from(devis).where(eq(devis.id, target.id));
     await tx.update(devis).set({ accountingState: "superseded", updatedAt: new Date() }).where(eq(devis.id, source.id));
     await tx.insert(devisReplacements).values({

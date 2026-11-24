@@ -70,6 +70,14 @@ describe("numbered native quotation tables", () => {
     const source = pages.map(p => p.replace("2.1  Plumbing\n", "2.1  Plumbing\nExcludes external connections; option subject to approval\n"));
     expect(recoverNumberedTable(source)?.rows[2].description).toContain("Excludes external connections; option subject to approval");
   });
+  it("keeps document declarations separate and retains section names without row numbering", () => {
+    const source = pages.map((p, i) => i ? p : p.replace(header, `${header}\nLegal VAT declaration for the whole document`));
+    const result = recoverNumberedTable(source)!;
+    expect(result.documentNotes).toEqual(["Legal VAT declaration for the whole document"]);
+    expect(result.rows[0].description).toBe("LOT WORK Installation beginning continued on second page");
+    expect(result.rows[1].description).toBe("LOT WORK Electricity by another trade");
+    expect(result.rows[2].description).toBe("LOT SERVICES Plumbing Connection");
+  });
   it("recovers before rendering or AI even when both services are unavailable", async () => {
     const { parseDocument } = await import("../../gmail/document-parser");
     const result = await parseDocument(Buffer.from("native test"), "source.pdf", {
@@ -97,7 +105,7 @@ describe("numbered native quotation tables", () => {
       getDenseCompletenessFallbackModelId: async () => null,
     });
     expect(result.lineItems).toHaveLength(3);
-    expect(result.nativeTableRecovery?.parser).toBe("numbered-table-v2");
+    expect(result.nativeTableRecovery?.parser).toBe("numbered-table-v3");
     expect(result.pricedItemVerification?.issues).toEqual([]);
     expect(result.extractionCoverage?.pageEvidence?.[2].candidateRows).toBe(0);
   });

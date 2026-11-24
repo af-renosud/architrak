@@ -26,6 +26,9 @@ export function recoverNumberedTable(pages: Array<string | null>) {
   const rows: NonNullable<ParsedDocument["lineItems"]> = [];
   const evidence: Array<{ pages: number[]; priceText: string; sourceText: string }> = [];
   const sections = new Map<string, { sum: number; closed: boolean; children: number }>();
+  const sectionNames = new Map<string, string>();
+  const documentNotes: string[] = [];
+  const sectionPrefixes: string[] = [];
   const recaps = new Map<string, number>();
   let stack: string[] = [], current = -1, inTable = false, recap = false;
   let ht: number | undefined, ttc: number | undefined, tax: number | undefined, tvaRate: number | undefined;
@@ -91,7 +94,8 @@ export function recoverNumberedTable(pages: Array<string | null>) {
         section.children++;
         if (item.total !== undefined && cents(item.quantity * item.unitPrice!) !== cents(item.total)) return null;
         for (const ref of stack) sections.get(ref)!.sum += cents(item.total ?? 0);
-        rows.push({ description: [...pendingText.splice(0), `${item.reference} ${item.description}`].join(" "), quantity: item.quantity,
+        sectionPrefixes.push(stack.map(ref => sectionNames.get(ref)!).join(" "));
+        rows.push({ description: [sectionPrefixes.at(-1)!, ...pendingText.splice(0), item.description].join(" "), quantity: item.quantity,
           unit: item.unit, unitPrice: item.unitPrice, total: item.total, pageHint: p + 1 });
         current = rows.length - 1;
         evidence.push({ pages: [p + 1], priceText: raw.trim(), sourceText: rows[current].description });
@@ -103,7 +107,10 @@ export function recoverNumberedTable(pages: Array<string | null>) {
         if (sections.has(ref) || moneyAtEnd.test(text) || (parent ? stack.at(-1) !== parent : stack.length !== 0)) return null;
         const siblings = Array.from(sections.keys()).filter(k => k.split(".").slice(0, -1).join(".") === parent);
         if (Number(ref.split(".").at(-1)) !== siblings.length + 1) return null;
-        pendingText.push(text);
+        // Document-level declarations preceding the first section must not
+        // become part of its first priced item. Retain them separately.
+        if (!sections.size) documentNotes.push(...pendingText.splice(0));
+        sectionNames.set(ref, heading[2]);
         sections.set(ref, { sum: 0, closed: false, children: 0 }); stack.push(ref); current = -1; continue;
       }
       if (/^Sous-total\s/i.test(text)) {
@@ -126,5 +133,5 @@ export function recoverNumberedTable(pages: Array<string | null>) {
     || Array.from(sections).some(([ref, s]) => !s.closed || recaps.get(ref) !== s.sum)
     || rows.reduce((n, r) => n + cents(r.total ?? 0), 0) !== cents(ht)) return null;
    if (pendingText.length) return null;
-   return { rows, evidence, amountHt: ht, amountTtc: ttc, tvaRate };
+   return { rows, evidence, amountHt: ht, amountTtc: ttc, tvaRate, documentNotes, sectionPrefixes };
 }

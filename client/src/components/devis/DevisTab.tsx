@@ -1206,6 +1206,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
                   className="border-[#0B2545]/40 font-semibold text-[#0B2545]"
                   onClick={event => { event.stopPropagation(); setMarkReplacedOpen(true); }}
                   data-testid={`button-replace-quotation-${d.id}`}
+                  disabled={!!replacementBlock}
                   aria-describedby={replacementBlock ? `replacement-block-${d.id}` : undefined}
                 >
                   Replace quotation
@@ -1746,7 +1747,7 @@ export function DevisTab({
     setSearchQuery("");
   };
 
-  const activeDevis = devisList?.filter(d => d.status !== "void") ?? [];
+  const activeDevis = devisList?.filter(d => d.status !== "void" && d.accountingState !== "superseded") ?? [];
   const totalDevisCount = activeDevis.length;
   const unavailableFigureCount = activeDevis.filter(quotationAmountsUnavailable).length;
   const knownFigureDevis = activeDevis.filter(d => !quotationAmountsUnavailable(d));

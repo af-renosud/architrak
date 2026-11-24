@@ -12,6 +12,8 @@ import { collectContextAssetIds, contextDocSchema, isContextDocEmpty } from "@sh
 import { composeDevisCode, tryParseDevisCode } from "@shared/devis-code";
 import { getDocumentBuffer, uploadDocument, deleteDocument } from "../storage/object-storage";
 import { ReplacementError, replacementBlockedReason, REPLACEMENT_LOCK_NAMESPACE } from "./quotation-replacement.service";
+import { sourceMatchKey, uniqueSourceMatches, type SourceMatchItem } from "@shared/quotation-source-match";
+import { recoverNumberedTable } from "./quotation-numbered-table";
 
 type Connection = typeof db | DbTransaction;
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -29,14 +31,11 @@ const textHeader = (value: unknown) => {
 
 /** Line numbers are deliberately NOT an identity. Repeated descriptions are not auto-matched. */
 export function suggestCarryMatches(source: CarryLine[], target: CarryLine[]): CarryLine[] {
-  const key = (line: CarryLine) => JSON.stringify([
-    normalize(line.description), line.quantity ? Number(line.quantity) : null,
-    normalize(line.unit ?? ""), line.unitPriceHt ? Number(line.unitPriceHt) : null, Number(line.totalHt),
-  ]);
-  return source.map(line => {
-    const same = target.filter(t => key(t) === key(line));
-    return { ...line, suggestedTargetId: same.length === 1 && source.filter(s => key(s) === key(line)).length === 1 ? same[0].id : null };
-  });
+  const identity = (line: CarryLine) => line.sourceIdentity === undefined
+    ? { description: line.description, quantity: line.quantity, unit: line.unit, unitPrice: line.unitPriceHt, total: line.totalHt }
+    : line.sourceIdentity;
+  const matches = uniqueSourceMatches(source, target, identity, identity);
+  return source.map(line => ({ ...line, suggestedTargetId: matches.get(line)?.id ?? null }));
 }
 
 async function loadState(conn: Connection, sourceId: number, targetId: number, lock = false) {
@@ -59,6 +58,8 @@ async function loadState(conn: Connection, sourceId: number, targetId: number, l
   const assets = await (lock ? aq.for("update") : aq);
   const pq = conn.select().from(devisSupportingPdfs).where(inArray(devisSupportingPdfs.devisId, ids)).orderBy(asc(devisSupportingPdfs.id));
   const pdfs = await (lock ? pq.for("update") : pq);
+  const audits = await conn.select().from(quotationArchitectAudit)
+    .where(inArray(quotationArchitectAudit.devisId, ids)).orderBy(asc(quotationArchitectAudit.id));
   const [project] = await conn.select().from(projects).where(eq(projects.id, source.projectId));
   const commitment = await conn.execute(sql`SELECT
     EXISTS(SELECT 1 FROM invoices WHERE devis_id=${targetId})
@@ -75,7 +76,7 @@ async function loadState(conn: Connection, sourceId: number, targetId: number, l
     sequence = Number(max.rows[0].next);
     code = composeDevisCode({ ...parsed, lotRef: source.lotRefText, lotSequence: sequence });
   }
-  return { source, target, tr, lines, contexts, assets, pdfs, project, code, sequence, committed: !!commitment.rows[0]?.committed };
+  return { source, target, tr, lines, contexts, assets, pdfs, audits, project, code, sequence, committed: !!commitment.rows[0]?.committed };
 }
 type State = Awaited<ReturnType<typeof loadState>>;
 const version = (s: State) => hash(s);
@@ -93,19 +94,70 @@ function blocked(s: State) {
 }
 function lineViews(s: State, id: number): CarryLine[] {
   const translated = translations(s.tr.find(t => t.devisId === id)?.lineTranslations);
+  const quotation = id === s.source.id ? s.source : s.target;
+  const extracted = (quotation.aiExtractedData as { lineItems?: SourceMatchItem[] } | null)?.lineItems ?? [];
+  const parsed = quotation.aiExtractedData as any;
+  // Earlier numbered-table candidates embedded section/row numbering and the
+  // document preamble into descriptions. Re-read their stored native text with
+  // the strict reader for identity only; do not mutate the extraction receipt.
+  const numbered = ["numbered-table-v2", "numbered-table-v3"].includes(parsed?.nativeTableRecovery?.parser) && typeof parsed.rawText === "string"
+    ? recoverNumberedTable([parsed.rawText]) : null;
+  const canonicalRows = numbered && numbered.rows.length === extracted.length
+    && numbered.amountHt === parsed.nativeTableRecovery.amountHt && numbered.amountTtc === parsed.nativeTableRecovery.amountTtc
+    && numbered.rows.every((row, i) => Number(row.quantity) === Number(extracted[i].quantity)
+      && row.unit === extracted[i].unit && row.unitPrice === extracted[i].unitPrice && row.total === extracted[i].total)
+    ? numbered.rows.map((row, index) => ({ ...row, sectionPrefix: numbered.sectionPrefixes[index] })) : null;
   return s.lines.filter(l => l.devisId === id).map(line => {
+    // Bind the stable row ID to the earliest recorded pre-edit source, then
+    // require it to agree with immutable extraction evidence. Never align by
+    // array position: additions and removals change positions.
+    const historic = s.audits.filter(a => a.devisId === id).flatMap(a => [
+      ...((a.beforeSnapshot as { lines?: any[] })?.lines ?? []),
+      ...((a.afterSnapshot as any)?.wordingTransfers ?? []).map((transfer: any) => transfer.before),
+    ].filter(row => row?.id === line.id))[0];
+    const original: SourceMatchItem = historic
+      ? { description: historic.description, quantity: historic.quantity, unit: historic.unit,
+          unitPrice: historic.unit_price_ht ?? historic.unitPriceHt, total: historic.total_ht ?? historic.totalHt }
+      : { description: line.description, quantity: line.quantity, unit: line.unit,
+          unitPrice: line.unitPriceHt, total: line.totalHt };
+    const key = sourceMatchKey(original);
+    let candidatesBySource = key ? extracted.filter(row => sourceMatchKey(row) === key) : [];
+    // Older working descriptions can predate the correction audit. Their
+    // retained PDF coordinates are a stronger identity than list position.
+    // Require exact page, valid box and figures, uniquely on both sides.
+    const region = (page: unknown, box: any) => {
+      const values = ["x", "y", "w", "h"].map(k => box?.[k]);
+      return typeof page === "number" && Number.isInteger(page) && page > 0
+        && values.every(v => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1)
+        && values[2] > 0 && values[3] > 0 ? JSON.stringify([page, ...values]) : null;
+    };
+    const sourceRegion = region(historic?.pdf_page_hint ?? line.pdfPageHint, historic?.pdf_bbox ?? line.pdfBbox);
+    if (!candidatesBySource.length && sourceRegion
+      && s.lines.filter(row => row.devisId === id && region(row.pdfPageHint, row.pdfBbox) === sourceRegion).length === 1) {
+      candidatesBySource = extracted.filter((row: any) => region(row.pageHint, row.bbox) === sourceRegion
+        && sourceMatchKey({ ...row, description: "identity" }) === sourceMatchKey({ ...original, description: "identity" }));
+    }
+    const targetFiguresUnchanged = id !== s.target.id || (
+      Number(original.quantity) === Number(line.quantity) && normalize(original.unit ?? "") === normalize(line.unit ?? "")
+      && Number(original.unitPrice) === Number(line.unitPriceHt) && Number(original.total) === Number(line.totalHt));
+    const extractedIdentity = candidatesBySource.length === 1 && targetFiguresUnchanged ? candidatesBySource[0] : null;
+    const sourceIdentity = extractedIdentity && canonicalRows ? canonicalRows[extracted.indexOf(extractedIdentity)] : extractedIdentity;
     const raw = s.contexts.find(c => c.devisLineItemId === line.id)?.document;
     const doc = raw ? contextDocSchema.parse(raw) : null;
     const candidates = translated.filter(t => t.lineNumber === line.lineNumber);
     const t = candidates.length === 1 ? candidates[0] : undefined;
     // Do not offer an obsolete translation tied to different source wording.
     const translation = t && (id === s.target.id || normalize(t.originalDescription) === normalize(line.description)) ? t.translation : null;
+    const explanationsCurrent = !!t && (id === s.target.id || normalize(t.originalDescription) === normalize(line.description));
     return {
       id: line.id, lineNumber: line.lineNumber, description: line.description,
       quantity: line.quantity ?? "", unit: line.unit, unitPriceHt: line.unitPriceHt ?? "", totalHt: line.totalHt,
       translation: translation?.trim() ? translation : null,
+      explanation: explanationsCurrent ? t?.explanation ?? null : null,
+      explanationFr: explanationsCurrent ? t?.explanationFr ?? null : null,
       context: isContextDocEmpty(doc) ? null : doc, imageCount: doc ? collectContextAssetIds(doc).length : 0,
       suggestedTargetId: null,
+      sourceIdentity, wordingChanged: !!extractedIdentity && normalize(line.description) !== normalize(extractedIdentity.description),
     };
   });
 }
@@ -140,6 +192,15 @@ export async function getCarryForwardPreview(sourceId: number, targetId: number)
   return preview(await loadState(db, sourceId, targetId));
 }
 
+/** Replacement always retains uniquely unchanged work, including API callers
+ * that do not send optional manual carry-forward choices. */
+export async function retainReplacementWork(tx: DbTransaction, source: Devis, target: Devis,
+  input: CarryForwardSelection | undefined, actorId: number, uploaded: string[]) {
+  const s = await loadState(tx, source.id, target.id, true);
+  const selection = input ?? { version: version(s), setup: [], header: false, supportingPdfIds: [], lines: [] };
+  return applyCarryForward(tx, source, target, selection, actorId, uploaded, true);
+}
+
 export async function cleanupCarryObjects(keys: string[]) {
   for (const key of keys) {
     try {
@@ -156,20 +217,43 @@ export async function cleanupCarryObjects(keys: string[]) {
 
 /** Called inside replacement's transaction, or the recovery transaction below. */
 export async function applyCarryForward(tx: DbTransaction, source: Devis, target: Devis,
-  input: CarryForwardSelection, actorId: number, uploaded: string[]) {
+  input: CarryForwardSelection, actorId: number, uploaded: string[], automatic = false) {
   const selection = carryForwardSchema.parse(input);
   const s = await loadState(tx, source.id, target.id, true);
   if (version(s) !== selection.version) throw new ReplacementError(409, "STALE_CARRY_FORWARD", "Previous or replacement content changed. Reload and review what to retain.");
   const reason = blocked(s);
   if (reason) throw new ReplacementError(409, "CARRY_FORWARD_BLOCKED", reason);
   const p = preview(s);
+  if (automatic) {
+    for (const from of p.sourceLines) {
+      const to = p.targetLines.find(row => row.id === from.suggestedTargetId);
+      if (!to) continue;
+      const selected = selection.lines.find(row => row.sourceLineId === from.id || row.targetLineId === to.id);
+      if (selected && (selected.sourceLineId !== from.id || selected.targetLineId !== to.id))
+        throw new ReplacementError(409, "EXACT_MATCH_RESERVED", "An unchanged item is retained automatically. Review the other assignment.");
+      const context = !!from.context && !to.context;
+      const translation = !!(from.translation || from.explanation || from.explanationFr)
+        && !(to.translation || to.explanation || to.explanationFr);
+      const wording = normalize(from.description) !== normalize(to.description) && !to.wordingChanged;
+      if (selected) Object.assign(selected, {
+        context: selected.context || context, translation: selected.translation || translation,
+        wording: selected.wording || wording,
+      });
+      else if (context || translation || wording) selection.lines.push({
+        sourceLineId: from.id, targetLineId: to.id, context, translation, wording,
+      });
+    }
+    selection.lines = selection.lines.filter(row => row.context || row.translation || row.wording);
+  }
   const usedSource = new Set<number>(), usedTarget = new Set<number>();
   for (const map of selection.lines) {
     if (usedSource.has(map.sourceLineId) || usedTarget.has(map.targetLineId)) throw new ReplacementError(400, "DUPLICATE_MAPPING", "Map each previous and replacement line only once.");
     usedSource.add(map.sourceLineId); usedTarget.add(map.targetLineId);
     const from = p.sourceLines.find(l => l.id === map.sourceLineId);
     const to = p.targetLines.find(l => l.id === map.targetLineId);
-    if (!from || !to || (!map.context && !map.translation)) throw new ReplacementError(400, "INVALID_MAPPING", "Select existing lines and content to copy.");
+    if (!from || !to || (!map.context && !map.translation && !map.wording)) throw new ReplacementError(400, "INVALID_MAPPING", "Select existing lines and content to copy.");
+    if (map.wording && (from.suggestedTargetId !== to.id || to.wordingChanged))
+      throw new ReplacementError(409, "WORDING_CONFLICT", "Working wording can only be retained on an unchanged, unedited replacement item.");
     if (map.translation && (p.sourceLines.filter(l => l.lineNumber === from.lineNumber).length !== 1
       || p.targetLines.filter(l => l.lineNumber === to.lineNumber).length !== 1)) {
       throw new ReplacementError(409, "AMBIGUOUS_LINE_NUMBER", "Resolve duplicate line numbers before copying translations. Context images can still be assigned by line.");
@@ -177,7 +261,8 @@ export async function applyCarryForward(tx: DbTransaction, source: Devis, target
     const targetTranslation = translations(s.tr.find(t => t.devisId === target.id)?.lineTranslations)
       .find(t => t.lineNumber === to.lineNumber);
     if ((map.context && (!from.context || to.context))
-      || (map.translation && (!from.translation || targetTranslation?.translation?.trim()))) {
+      || (map.translation && (!(from.translation || from.explanation || from.explanationFr)
+        || targetTranslation?.translation?.trim() || targetTranslation?.explanation?.trim() || targetTranslation?.explanationFr?.trim()))) {
       throw new ReplacementError(409, "EXISTING_CONTENT", "Existing replacement work will not be overwritten. Review the selected line content.");
     }
   }
@@ -192,6 +277,8 @@ export async function applyCarryForward(tx: DbTransaction, source: Devis, target
   });
   if (!selection.lines.length && !selection.setup.length && !selection.header && !selectedPdfs.length) return { copiedLines: 0 };
 
+  await tx.execute(sql`SELECT set_config('renosud.architect_correction','on',true)`);
+
   async function copyObject(key: string, name: string, mime: string) {
     const buffer = await getDocumentBuffer(key);
     if (!buffer.length) throw new ReplacementError(409, "MISSING_ASSET", "A previous attachment is empty. No replacement or partial copy was saved.");
@@ -204,6 +291,7 @@ export async function applyCarryForward(tx: DbTransaction, source: Devis, target
   for (const map of selection.lines) {
     const from = p.sourceLines.find(l => l.id === map.sourceLineId)!;
     const to = p.targetLines.find(l => l.id === map.targetLineId)!;
+    if (map.wording) await tx.update(devisLineItems).set({ description: from.description }).where(eq(devisLineItems.id, to.id));
     if (map.context && from.context) {
       const document = structuredClone(from.context);
       const ids = collectContextAssetIds(document);
@@ -226,7 +314,7 @@ export async function applyCarryForward(tx: DbTransaction, source: Devis, target
       const original = translations(s.tr.find(t => t.devisId === source.id)?.lineTranslations).find(t => t.lineNumber === from.lineNumber)!;
       const existing = newTranslations.find(t => t.lineNumber === to.lineNumber);
       const entry: DevisTranslationLine = {
-        ...existing, lineNumber: to.lineNumber, originalDescription: to.description,
+        ...existing, lineNumber: to.lineNumber, originalDescription: map.wording ? from.description : to.description,
         translation: original.translation, explanation: original.explanation, explanationFr: original.explanationFr, edited: true,
       };
       if (existing) newTranslations.splice(newTranslations.indexOf(existing), 1, entry);
@@ -261,7 +349,15 @@ export async function applyCarryForward(tx: DbTransaction, source: Devis, target
   await tx.insert(quotationArchitectAudit).values({
     devisId: target.id, actorId, operation: "correction",
     beforeSnapshot: { kind: "carry_forward", sourceDevisId: source.id, version: selection.version },
-    afterSnapshot: { kind: "carry_forward", sourceDevisId: source.id, selection, reviewRequired: true },
+    afterSnapshot: { kind: "carry_forward", sourceDevisId: source.id, selection, reviewRequired: true,
+      targetSourceKey: target.pdfStorageKey,
+      targetSourceDigest: (target.aiExtractedData as any)?.pricedItemVerification?.sourceDigest
+        ?? (target.aiExtractedData as any)?.quotationVerification?.sourceDigest ?? null,
+      wordingTransfers: selection.lines.filter(map => map.wording).map(map => ({
+        before: s.lines.find(row => row.id === map.targetLineId),
+        afterDescription: p.sourceLines.find(row => row.id === map.sourceLineId)!.description,
+      })),
+    },
   });
   return { copiedLines: selection.lines.length };
 }

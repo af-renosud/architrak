@@ -44,7 +44,6 @@ export function ReplaceQuotationDialog({ devisId, projectId, localBlockedReason,
   const [search, setSearch] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [step, setStep] = useState<"selection" | "retain">("selection");
-  const [skipCarry, setSkipCarry] = useState(false);
   const carry = useQuotationCarryForward(devisId, selectedId);
   const [review, setReview] = useState<{ options: ReplacementOptions; target: ReplacementQuotation; carryForward?: CarryForwardSelection; carryPreview?: CarryForwardPreview } | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -56,8 +55,8 @@ export function ReplaceQuotationDialog({ devisId, projectId, localBlockedReason,
     onSuccess: (_result, request) => {
       invalidateQuotationCarryForward(projectId, devisId, request.replacementDevisId);
       toast({ title: "Quotation replaced", description: hasCarryWork(request.carryForward)
-        ? "Selected previous work was carried forward. Review the target draft. Signatures, approvals and financial history stayed on the original."
-        : "Replacement recorded without copying previous work. Original context remains accessible in replacement history. No financial history was transferred." });
+        ? "Unchanged items retained previous work automatically; additional selected work was carried forward. Existing replacement content was protected. Review the target draft. No signatures, approvals or financial history were transferred."
+        : "Unchanged items retained previous work automatically where the replacement had no existing work. No additional copying was requested. Review the target draft; no signatures, approvals or financial history were transferred." });
       onClose();
     },
     onError: async (error: Error) => {
@@ -65,7 +64,6 @@ export function ReplaceQuotationDialog({ devisId, projectId, localBlockedReason,
       if (error instanceof ApiError && error.status === 409) {
         setSelectedId(null);
         setStep("selection");
-        setSkipCarry(false);
         setAcknowledged(false);
         void carry.reload();
         setSaveError("The quotation or previous work changed. Stale copy selections have been cleared. Select the replacement and review the refreshed work again; your internal note has been kept.");
@@ -87,9 +85,9 @@ export function ReplaceQuotationDialog({ devisId, projectId, localBlockedReason,
     `${candidate.devisCode} ${candidate.devisNumber ?? ""} ${candidate.descriptionFr} ${candidate.contractorName}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
   ) ?? [];
   const pending = mutation.isPending;
-  const carryReady = skipCarry || (!!carry.preview.data && !!carry.selection && !carry.preview.data.blockedReason && !carry.preview.isError && !carry.preview.isFetching);
-  const reviewCurrent = !!review && review.options === data && (!review.carryForward ||
-    (review.carryForward.version === carry.preview.data?.version && !carry.preview.isFetching && !carry.preview.isError));
+   const carryReady = !!carry.preview.data && !!carry.selection && !carry.preview.data.blockedReason && !carry.preview.isError && !carry.preview.isFetching;
+   const reviewCurrent = !!review && review.options === data && !!review.carryPreview &&
+     review.carryPreview.version === carry.preview.data?.version && carryReady;
 
   function submit() {
     if (!review || !valid || submitting.current || pending || !reviewCurrent) return;
@@ -115,7 +113,7 @@ export function ReplaceQuotationDialog({ devisId, projectId, localBlockedReason,
       >
         <DialogHeader>
           <DialogTitle>{review ? "Confirm quotation replacement" : step === "retain" ? "Retain previous work" : "Replace quotation"}</DialogTitle>
-          <DialogDescription>{review ? "Check the old → new record, selected work and financial impact before confirming." : step === "retain" ? "Compare original work with the replacement and choose exactly what to keep." : "Choose a processed quotation in this project. Nothing changes until you confirm."}</DialogDescription>
+          <DialogDescription>{review ? "Check the old → new record, automatic retention, additional selections and financial impact." : step === "retain" ? "Unchanged items retain previous work automatically. Review changed items and choose any additional copying." : "Choose a processed quotation in this project. Nothing changes until you confirm."}</DialogDescription>
         </DialogHeader>
         <p className="text-xs text-muted-foreground">1. Selection → 2. Retain previous work → 3. Review → 4. Confirm</p>
         {blocked && <p role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">{blocked}</p>}
@@ -141,20 +139,17 @@ export function ReplaceQuotationDialog({ devisId, projectId, localBlockedReason,
             <p>Prior signatures, documents and payments remain on the old record. There is no financial transfer. The old quotation no longer counts toward Contracted totals; a new unsigned quotation is not committed.</p>
             {differentContractor && <p className="font-semibold text-amber-800">Different contractor acknowledged: {review.options.source.contractorName} → {review.target.contractorName}.</p>}
             <div><p className="font-semibold">Internal context</p><p className="mt-1 whitespace-pre-wrap break-words">{note.trim()}</p></div>
-            {review.carryForward && review.carryPreview
-              ? <QuotationCarryForwardPanel preview={review.carryPreview} selection={review.carryForward} onChange={() => {}} readOnly />
-              : <div className="rounded-md border bg-muted/30 p-3"><p className="font-semibold">Replacement without copying previous work</p><p className="mt-1">All original context and translations remain on the original. Review previous work in replacement history to assign it later. Target draft review is required; no signature, approval or financial history is copied.</p></div>}
+            {review.carryPreview && <QuotationCarryForwardPanel preview={review.carryPreview} selection={review.carryForward ?? {
+              version: review.carryPreview.version, setup: [], header: false, supportingPdfIds: [], lines: [],
+            }} onChange={() => {}} readOnly />}
           </div>
         ) : step === "retain" ? (
           <div className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2"><div className="rounded-md border p-3"><p className="mb-2 text-xs font-semibold">Original</p><QuotationSummary quotation={data.source} /></div>{selected && <div className="rounded-md border p-3"><p className="mb-2 text-xs font-semibold">Replacement</p><QuotationSummary quotation={selected} /></div>}</div>
             {carry.preview.isFetching && <div aria-label="Loading previous work" className="space-y-3"><Skeleton className="h-24 w-full" /><Skeleton className="h-48 w-full" /></div>}
-            {carry.preview.isError && <div role="alert" className="space-y-2 rounded-md border border-destructive/30 p-3 text-sm"><p>Previous work could not be loaded. {carry.preview.error.message}</p><p>Retry, or explicitly proceed without copying. Your original work will not be deleted.</p><Button variant="outline" disabled={carry.preview.isFetching} onClick={() => { setSkipCarry(false); void carry.reload(); }}>Retry loading previous work</Button></div>}
-            {!carry.preview.isFetching && !carry.preview.isError && carry.preview.data && carry.selection && !skipCarry && <QuotationCarryForwardPanel preview={carry.preview.data} selection={carry.selection} onChange={carry.setSelection} />}
-            <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
-              <input type="checkbox" className="mt-1" checked={skipCarry} onChange={event => setSkipCarry(event.target.checked)} />
-              <span><span className="font-semibold">Proceed without copying previous work</span><span className="mt-1 block text-xs text-muted-foreground">Explicitly skip copying, including if the preview is unavailable or blocked. Original content remains accessible through “Review previous work” in replacement history.</span></span>
-            </label>
+            {carry.preview.isError && <div role="alert" className="space-y-2 rounded-md border border-destructive/30 p-3 text-sm"><p>Previous work could not be loaded. {carry.preview.error.message}</p><p>Reload the preview to review automatic retention and any additional selections. Nothing has changed.</p><Button variant="outline" disabled={carry.preview.isFetching} onClick={() => { void carry.reload(); }}>Retry loading previous work</Button></div>}
+            {!carry.preview.isFetching && !carry.preview.isError && carry.preview.data && carry.selection && <QuotationCarryForwardPanel preview={carry.preview.data} selection={carry.selection} onChange={carry.setSelection} />}
+            {carry.preview.data?.blockedReason && <Button variant="outline" disabled={carry.preview.isFetching} onClick={() => { void carry.reload(); }}>Refresh previous work</Button>}
           </div>
         ) : (
           <div className="space-y-4">
@@ -180,7 +175,7 @@ export function ReplaceQuotationDialog({ devisId, projectId, localBlockedReason,
                       {candidates.map(candidate => (
                         <button type="button" role="option" aria-selected={selectedId === candidate.id} key={candidate.id} disabled={!!candidate.blockedReason}
                           className="w-full rounded-md border-b p-3 text-left hover:bg-muted focus-visible:outline focus-visible:outline-2 disabled:cursor-not-allowed disabled:opacity-60"
-                           onClick={() => { setSelectedId(candidate.id); setSkipCarry(false); setAcknowledged(false); setPickerOpen(false); setSaveError(null); }}>
+                           onClick={() => { setSelectedId(candidate.id); setAcknowledged(false); setPickerOpen(false); setSaveError(null); }}>
                           <QuotationSummary quotation={candidate} />
                           {candidate.blockedReason && <span className="mt-1 block text-xs text-destructive">{candidate.blockedReason}</span>}
                         </button>
@@ -207,9 +202,9 @@ export function ReplaceQuotationDialog({ devisId, projectId, localBlockedReason,
             <Button variant="outline" disabled={pending} onClick={() => setStep("selection")}>Back to selection</Button>
             <Button disabled={!valid || pending || !carryReady} onClick={() => {
               if (!data || !selected || !valid || !carryReady) return;
-              const work = !skipCarry && carry.selection && hasCarryWork(carry.selection) ? selectedCarryWork(carry.selection) : undefined;
-              setReview({ options: data, target: selected, carryForward: work, carryPreview: work ? carry.preview.data : undefined });
-            }} data-testid="button-review-replacement">Review replacement{skipCarry || (carry.selection && !hasCarryWork(carry.selection)) ? " without copying" : ""}</Button>
+              const work = carry.selection && hasCarryWork(carry.selection) ? selectedCarryWork(carry.selection) : undefined;
+              setReview({ options: data, target: selected, carryForward: work, carryPreview: carry.preview.data });
+            }} data-testid="button-review-replacement">Review replacement</Button>
           </> : <Button disabled={!valid || pending} onClick={() => { if (valid) setStep("retain"); }} data-testid="button-retain-previous-work">Continue to previous work</Button>}
         </DialogFooter>
       </DialogContent>

@@ -12,7 +12,7 @@ import { hasCarryWork, invalidateQuotationCarryForward, selectedCarryWork, useQu
 export function ReviewPreviousQuotationWorkDialog({ sourceId, targetId, sourceLabel, targetLabel, projectId, onClose }: {
   sourceId: number; targetId: number; sourceLabel: string; targetLabel: string; projectId: string; onClose: () => void;
 }) {
-  const carry = useQuotationCarryForward(sourceId, targetId);
+  const carry = useQuotationCarryForward(sourceId, targetId, false);
   const { toast } = useToast();
   const [review, setReview] = useState<CarryForwardSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +49,7 @@ export function ReviewPreviousQuotationWorkDialog({ sourceId, targetId, sourceLa
       {error && <p role="alert" className="rounded-md border border-destructive/30 p-3 text-sm text-destructive">{error}</p>}
       {carry.preview.isFetching && <div aria-label="Loading previous work" className="space-y-3"><Skeleton className="h-24 w-full" /><Skeleton className="h-48 w-full" /></div>}
       {carry.preview.isError && <div role="alert" className="space-y-2 text-sm"><p>Could not load previous work. {carry.preview.error.message}</p><Button variant="outline" disabled={carry.preview.isFetching} onClick={() => { setReview(null); void carry.reload(); }}>Retry loading previous work</Button></div>}
-      {!carry.preview.isFetching && !carry.preview.isError && carry.preview.data && carry.selection && <QuotationCarryForwardPanel preview={carry.preview.data} selection={review ?? carry.selection} onChange={carry.setSelection} readOnly={!!review || pending} />}
+      {!carry.preview.isFetching && !carry.preview.isError && carry.preview.data && carry.selection && <QuotationCarryForwardPanel preview={carry.preview.data} selection={review ?? carry.selection} onChange={carry.setSelection} readOnly={!!review || pending} automaticRetention={false} />}
       <DialogFooter className="gap-2">
         <Button variant="outline" disabled={pending} onClick={() => { if (!submitting.current) onClose(); }}>Close</Button>
         {review ? <>

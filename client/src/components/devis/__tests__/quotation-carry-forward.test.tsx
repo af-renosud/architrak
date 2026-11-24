@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { apiRequest, ApiError } from "@/lib/queryClient";
 import type { CarryForwardPreview, CarryLine } from "@shared/quotation-carry-forward";
 import { QuotationCarryForwardPanel } from "../QuotationCarryForwardPanel";
-import { suggestedCarrySelection } from "../use-quotation-carry-forward";
+import { automaticCarryTarget, hasCarryWork, selectedCarryWork, suggestedCarrySelection } from "../use-quotation-carry-forward";
 import { ReplaceQuotationDialog } from "../ReplaceQuotationDialog";
 import { QuotationReplacementHistory } from "../QuotationReplacementHistory";
 
@@ -25,18 +25,20 @@ const target = { ...source, id: 19, devisCode: "LOT-04-B", signed: false, versio
 const options = { source, candidates: [target], impact: { invoices: 2, situations: 1, marcheDocuments: 0, certificates: 1, payments: 2 }, impactVersion: "impact-token", blockedReason: null };
 
 function wrap(ui: React.ReactNode) {
-  return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>{ui}</QueryClientProvider>);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  return { ...render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>), client };
 }
 function Panel() {
   const [selection, setSelection] = useState(suggestedCarrySelection(preview));
   return <QuotationCarryForwardPanel preview={preview} selection={selection} onChange={setSelection} />;
 }
 async function selectReplacement() {
-  wrap(<ReplaceQuotationDialog devisId={12} projectId="4" localBlockedReason={null} onClose={close} />);
+  const mounted = wrap(<ReplaceQuotationDialog devisId={12} projectId="4" localBlockedReason={null} onClose={close} />);
   fireEvent.click(await screen.findByTestId("replacement-select"));
   fireEvent.click(await screen.findByRole("option", { name: /LOT-04-B/ }));
   fireEvent.change(screen.getByLabelText("Internal context (required)"), { target: { value: "Revision after site inspection" } });
   fireEvent.click(screen.getByTestId("button-retain-previous-work"));
+  return mounted;
 }
 
 beforeEach(() => {
@@ -54,13 +56,60 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("quotation carry-forward", () => {
-  it("defaults only server suggestions and protects context and translation independently", () => {
+  it("shows automatic matches as information, without including them in optional selections", () => {
     preview.targetLines[0].context = doc;
+    preview.sourceLines[0].wordingChanged = true;
     const selection = suggestedCarrySelection(preview);
-    expect(selection.lines).toEqual([{ sourceLineId: 1, targetLineId: 11, context: false, translation: true }]);
+    expect(selection.lines).toEqual([]);
     expect(selection.setup).toEqual([]);
     expect(selection.header).toBe(false);
     expect(selection.supportingPdfIds).toEqual([]);
+    wrap(<Panel />);
+    const row = within(screen.getByTestId("carry-automatic-line-1"));
+    expect(row.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(row.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(row.getByText("Working wording: retained automatically.")).toBeVisible();
+    expect(row.getByText("Context: existing replacement context protected.")).toBeVisible();
+    expect(row.getByText("Translation: retained automatically.")).toBeVisible();
+  });
+
+  it("protects existing wording and translation independently on unchanged items", () => {
+    preview.sourceLines[0].wordingChanged = true;
+    preview.targetLines[0].wordingChanged = true;
+    preview.targetLines[0].translation = "Keep this translation";
+    wrap(<Panel />);
+    const row = within(screen.getByTestId("carry-automatic-line-1"));
+    expect(row.getByText("Working wording: existing replacement wording protected.")).toBeVisible();
+    expect(row.getByText("Translation: existing replacement translation protected.")).toBeVisible();
+    expect(row.getByText("Context: retained automatically.")).toBeVisible();
+    expect(row.getByText("Keep this translation", { exact: false })).toBeVisible();
+  });
+
+  it("includes wording-only work and rejects missing or ambiguous automatic targets", () => {
+    const selection = { ...suggestedCarrySelection(preview), lines: [
+      { sourceLineId: 1, targetLineId: 11, context: false, translation: false, wording: true },
+      { sourceLineId: 2, targetLineId: 12, context: false, translation: false },
+    ] };
+    expect(hasCarryWork(selection)).toBe(true);
+    expect(selectedCarryWork(selection).lines).toEqual([selection.lines[0]]);
+    preview.sourceLines.push(line(3, { suggestedTargetId: 11 }));
+    expect(automaticCarryTarget(preview, preview.sourceLines[0])).toBeUndefined();
+    preview.sourceLines[0].suggestedTargetId = 999;
+    expect(automaticCarryTarget(preview, preview.sourceLines[0])).toBeUndefined();
+  });
+
+  it("includes wording-only unchanged items in automatic retention", () => {
+    preview.sourceLines = [line(1, { wordingChanged: true, suggestedTargetId: 11 })];
+    wrap(<Panel />);
+    expect(screen.getByTestId("carry-automatic-line-1")).toHaveTextContent("Working wording: retained automatically.");
+    expect(screen.queryByTestId("carry-source-line-1")).not.toBeInTheDocument();
+  });
+
+  it("keeps wording changes on ambiguous items visible but does not offer invalid wording copying", () => {
+    preview.sourceLines = [line(2, { wordingChanged: true })];
+    wrap(<Panel />);
+    expect(screen.getByTestId("carry-source-line-2")).toHaveTextContent("Edited working wording stays on the original.");
+    expect(screen.queryByRole("checkbox", { name: /Copy wording/ })).not.toBeInTheDocument();
   });
 
   it("renders full owned rich context and exact proposed setup, and requires explicit changed-row choices", () => {
@@ -99,36 +148,60 @@ describe("quotation carry-forward", () => {
     fireEvent.click(screen.getByTestId("button-confirm-mark-replaced"));
     await waitFor(() => expect(request).toHaveBeenCalledWith("POST", "/api/devis/12/mark-replaced", expect.objectContaining({
       sourceVersion: "source-token", targetVersion: "target-token", impactVersion: "impact-token",
-      carryForward: { version: "work-token", setup: ["devisCode"], header: true, supportingPdfIds: [8], lines: [{ sourceLineId: 1, targetLineId: 11, context: true, translation: true }] },
+      carryForward: { version: "work-token", setup: ["devisCode"], header: true, supportingPdfIds: [8], lines: [] },
     })));
   });
 
-  it("requires retry or explicit no-copy on fetch failure and never silently skips", async () => {
+  it("invalidates an automatic-only review if the preview version changes", async () => {
+    const { client } = await selectReplacement();
+    await waitFor(() => expect(screen.getByTestId("button-review-replacement")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("button-review-replacement"));
+    expect(screen.getByTestId("button-confirm-mark-replaced")).toBeEnabled();
+    act(() => {
+      client.setQueryData(["/api/devis", 12, "carry-forward", 19], { ...preview, version: "changed-after-review" });
+    });
+    await waitFor(() => expect(screen.getByTestId("button-confirm-mark-replaced")).toBeDisabled());
+    fireEvent.click(screen.getByTestId("button-confirm-mark-replaced"));
+    expect(request.mock.calls.filter(([method]) => method === "POST")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Back to previous work" }));
+    fireEvent.click(screen.getByTestId("button-review-replacement"));
+    expect(screen.getByTestId("button-confirm-mark-replaced")).toBeEnabled();
+  });
+
+  it("requires a successful retry on fetch failure and never offers to skip automatic retention", async () => {
+    let unavailable = true;
     request.mockImplementation(async (_method, url) => {
-      if (url.includes("carry-forward")) throw new Error("Connection lost");
+      if (url.includes("carry-forward")) {
+        if (unavailable) throw new Error("Connection lost");
+        return { json: async () => preview } as Response;
+      }
       return { json: async () => options } as Response;
     });
     await selectReplacement();
     await screen.findByText(/Previous work could not be loaded/);
     expect(screen.getByTestId("button-review-replacement")).toBeDisabled();
+    expect(screen.queryByLabelText(/Proceed without copying previous work/)).not.toBeInTheDocument();
+    unavailable = false;
     fireEvent.click(screen.getByRole("button", { name: "Retry loading previous work" }));
     await waitFor(() => expect(request.mock.calls.filter(([, url]) => url.includes("carry-forward"))).toHaveLength(2));
-    fireEvent.click(screen.getByLabelText(/Proceed without copying previous work/));
+    await waitFor(() => expect(screen.getByTestId("button-review-replacement")).toBeEnabled());
     fireEvent.click(screen.getByTestId("button-review-replacement"));
+    expect(screen.getByTestId("carry-automatic-line-1")).toBeVisible();
     fireEvent.click(screen.getByTestId("button-confirm-mark-replaced"));
     await waitFor(() => expect(close).toHaveBeenCalled());
     const body = request.mock.calls.find(([method]) => method === "POST")?.[2];
     expect(body).not.toHaveProperty("carryForward");
   });
 
-  it("blocks copying but still permits explicitly replacing without it", async () => {
+  it("blocks replacement until a blocked preview is refreshed", async () => {
     preview.blockedReason = "Replacement is locked for editing.";
     await selectReplacement();
-    await screen.findByText(/Copying is unavailable/);
+    await screen.findByText(/Previous work cannot be reviewed/);
     expect(screen.getByLabelText(/Copy source header/)).toBeDisabled();
     expect(screen.getByTestId("button-review-replacement")).toBeDisabled();
-    fireEvent.click(screen.getByLabelText(/Proceed without copying previous work/));
-    expect(screen.getByTestId("button-review-replacement")).toBeEnabled();
+    preview = { ...preview, blockedReason: null, version: "refreshed-work" };
+    fireEvent.click(screen.getByRole("button", { name: "Refresh previous work" }));
+    await waitFor(() => expect(screen.getByTestId("button-review-replacement")).toBeEnabled());
   });
 
   it.each([12, 19])("opens recovery from history on quotation %s and resets stale recovery selections", async devisId => {

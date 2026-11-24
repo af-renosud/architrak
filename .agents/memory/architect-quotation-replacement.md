@@ -16,6 +16,12 @@ Zero-friction carry-forward for exact unchanged items is a central product requi
 
 **How to apply:** Match underlying contractor-source content rather than requiring edited working descriptions to equal newly extracted text. Preserve the revised PDF's authority for scope and figures. Surface only changed, ambiguous or conflicting items for decisions; report automatic transfers without making acknowledgement another prerequisite.
 
+Legacy edited rows without a recoverable source identity must not be matched solely by their price or position.
+
+**Why:** Older quotations can have edited French descriptions without a pre-edit row binding. An original extraction with similar prices is not proof that a particular working row belongs to it.
+
+**How to apply:** Prefer immutable pre-edit history or unique source-page coordinates with matching figures. Keep unproven work on the previous version and expose it for explicit assignment rather than fabricating exact matches.
+
 Translation context, especially embedded images, is the user's highest-value authored content. Preserve the complete rich document and saved image sizes, not just extracted text. Copies must own independent image bytes and asset identities.
 
 **Why:** The user identified recreating translation context and images as the biggest potential loss of time. Sharing the old asset ownership or storage key would let old-quotation cleanup break the new quotation.

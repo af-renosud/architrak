@@ -115,7 +115,7 @@ const enabled = !!process.env.RECOVERY_SOURCE_PDF && !!process.env.DATABASE_URL;
     expect(extraction.lineItems).toHaveLength(167);
     expect(extraction.amountHt).toBe(412465.90);
     expect(extraction.amountTtc).toBe(453712.49);
-    expect(extraction.nativeTableRecovery.parser).toBe("numbered-table-v2");
+    expect(extraction.nativeTableRecovery.parser).toBe("numbered-table-v3");
     expect(extraction.extractionCoverage.chunkCount).toBe(0);
     expect(extraction.extractionCoverage.renderedPageCount).toBe(0);
     expect((await state.pool.query("SELECT count(*)::int n FROM devis_line_items")).rows[0].n).toBe(extraction.lineItems.length);

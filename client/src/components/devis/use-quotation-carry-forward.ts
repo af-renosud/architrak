@@ -6,36 +6,42 @@ import type { CarryForwardPreview, CarryForwardSelection, CarryLine } from "@sha
 import { invalidateQuotationReplacement } from "./use-quotation-replacement";
 
 export const hasLineContext = (line: CarryLine) => !isContextDocEmpty(line.context) || line.imageCount > 0;
-export const hasLineTranslation = (line: CarryLine) => !!line.translation?.trim();
+export const hasLineTranslation = (line: CarryLine) => !!(line.translation?.trim() || line.explanation?.trim() || line.explanationFr?.trim());
+export const hasLineWork = (line: CarryLine) => hasLineContext(line) || hasLineTranslation(line) || !!line.wordingChanged;
 
-export function suggestedCarrySelection(preview: CarryForwardPreview): CarryForwardSelection {
-  const used = new Set<number>();
+/** Suggestions describe automatic retention, not user consent or optional copying. */
+export function automaticCarryTarget(preview: CarryForwardPreview, source: CarryLine): CarryLine | undefined {
+  if (source.suggestedTargetId == null) return undefined;
+  if (preview.sourceLines.filter(line => line.suggestedTargetId === source.suggestedTargetId).length !== 1) return undefined;
+  return preview.targetLines.find(line => line.id === source.suggestedTargetId);
+}
+
+export function suggestedCarrySelection(preview: CarryForwardPreview, automaticRetention = true): CarryForwardSelection {
   return {
     version: preview.version, setup: [], header: false, supportingPdfIds: [],
-    lines: preview.sourceLines.flatMap(source => {
-      const target = preview.targetLines.find(line => line.id === source.suggestedTargetId);
-      // Only the server's unique, exact, unchanged suggestions may be preselected.
-      if (!target || used.has(target.id)) return [];
-      used.add(target.id);
-      return [{
+    // Later recovery is still an explicit-copy endpoint, unlike replacement.
+    lines: automaticRetention ? [] : preview.sourceLines.flatMap(source => {
+      const target = automaticCarryTarget(preview, source);
+      return target ? [{
         sourceLineId: source.id, targetLineId: target.id,
         context: hasLineContext(source) && !hasLineContext(target),
         translation: hasLineTranslation(source) && !hasLineTranslation(target),
-      }];
+        wording: !!source.wordingChanged && !target.wordingChanged,
+      }] : [];
     }),
   };
 }
 
 export function selectedCarryWork(selection: CarryForwardSelection): CarryForwardSelection {
-  return { ...selection, lines: selection.lines.filter(line => line.context || line.translation) };
+  return { ...selection, lines: selection.lines.filter(line => line.context || line.translation || line.wording) };
 }
 
 export function hasCarryWork(selection: CarryForwardSelection | null | undefined): boolean {
   return !!selection && (!!selection.setup.length || selection.header || !!selection.supportingPdfIds.length
-    || selection.lines.some(line => line.context || line.translation));
+    || selection.lines.some(line => line.context || line.translation || line.wording));
 }
 
-export function useQuotationCarryForward(sourceId: number, targetId: number | null) {
+export function useQuotationCarryForward(sourceId: number, targetId: number | null, automaticRetention = true) {
   const preview = useQuery<CarryForwardPreview>({
     queryKey: ["/api/devis", sourceId, "carry-forward", targetId],
     queryFn: async () => (await apiRequest("GET", `/api/devis/${sourceId}/carry-forward?targetId=${targetId}`)).json(),
@@ -49,7 +55,7 @@ export function useQuotationCarryForward(sourceId: number, targetId: number | nu
   const data = preview.data;
   const selection = data
     ? edited?.sourceId === sourceId && edited.targetId === targetId && edited.selection.version === data.version
-      ? edited.selection : suggestedCarrySelection(data)
+      ? edited.selection : suggestedCarrySelection(data, automaticRetention)
     : null;
   return {
     preview, selection,

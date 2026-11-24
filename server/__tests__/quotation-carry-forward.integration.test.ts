@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../db";
 import {
   users, projects, contractors, devis, devisLineItems, devisTranslations, devisLineContexts,
-  devisLineContextAssets, devisSupportingPdfs, devisReplacements, type InsertDevis,
+  devisLineContextAssets, devisSupportingPdfs, devisReplacements, quotationArchitectAudit, type InsertDevis,
 } from "@shared/schema";
 import type { CarryForwardSelection } from "@shared/quotation-carry-forward";
 import { getCarryForwardPreview, recoverCarryForward } from "../services/quotation-carry-forward";
@@ -40,8 +40,9 @@ async function quote(fields: Partial<InsertDevis> = {}) {
   return row;
 }
 async function fixture() {
-  const source = await quote();
-  const target = await quote({ descriptionFr: "Revised work", descriptionUk: null, amountHt: "80", amountTtc: "96" });
+  const aiExtractedData = { lineItems: [{ description: "Paint ceiling", quantity: 2, unit: "m²", unitPrice: 50, total: 100 }] };
+  const source = await quote({ aiExtractedData });
+  const target = await quote({ aiExtractedData, descriptionFr: "Revised work", descriptionUk: null, amountHt: "80", amountTtc: "96" });
   const [oldLine] = await db.insert(devisLineItems).values({
     devisId: source.id, lineNumber: 1, description: "Paint ceiling", quantity: "2", unit: "m²", unitPriceHt: "50", totalHt: "100",
     checkNotes: "PRIVATE contractor question", checkStatus: "approved",
@@ -107,12 +108,45 @@ describe("replacement carry-forward", () => {
   });
   it("leaves unassigned work on the original and supports explicit later recovery", async () => {
     const f = await fixture();
+    await db.update(devisLineItems).set({ description: "Changed ceiling specification" }).where(eq(devisLineItems.id, f.newLine.id));
     await replace(f);
     expect(await db.select().from(devisLineContexts).where(eq(devisLineContexts.devisLineItemId, f.newLine.id))).toHaveLength(0);
     const selected = await selection(f);
     await recoverCarryForward(f.source.id, f.target.id, selected, actorId);
     expect(await db.select().from(devisLineContexts).where(eq(devisLineContexts.devisLineItemId, f.newLine.id))).toHaveLength(1);
     await expect(recoverCarryForward(f.source.id, f.target.id, await selection(f), actorId)).rejects.toMatchObject({ code: "EXISTING_CONTENT" });
+  });
+  it("automatically retains exact unchanged context and translation without a selection", async () => {
+    const f = await fixture();
+    await replace(f);
+    expect(await db.select().from(devisLineContexts).where(eq(devisLineContexts.devisLineItemId, f.newLine.id))).toHaveLength(1);
+    const [tr] = await db.select().from(devisTranslations).where(eq(devisTranslations.devisId, f.target.id));
+    expect((tr.lineTranslations as any[])[0].translation).toBe("Paint the ceiling.");
+    expect(tr.approvedAt).toBeNull();
+    expect((await db.select().from(devis).where(eq(devis.id, f.target.id)))[0].amountHt).toBe("80.00");
+  });
+  it("retains an authored French amendment through its audited source identity", async () => {
+    const f = await fixture();
+    await db.insert(quotationArchitectAudit).values({
+      devisId: f.source.id, actorId, operation: "correction",
+      beforeSnapshot: { lines: [{ id: f.oldLine.id, description: "Paint ceiling", quantity: "2",
+        unit: "m²", unit_price_ht: "50", total_ht: "100" }] },
+      afterSnapshot: { note: "Working wording amended" },
+    });
+    await db.update(devisLineItems).set({ description: "Paint ceiling — architect wording" }).where(eq(devisLineItems.id, f.oldLine.id));
+    await db.update(devisTranslations).set({
+      lineTranslations: [{ lineNumber: 1, originalDescription: "Paint ceiling — architect wording", translation: "Retained English wording", explanationFr: "Précision conservée" }],
+    }).where(eq(devisTranslations.devisId, f.source.id));
+    const preview = await getCarryForwardPreview(f.source.id, f.target.id);
+    expect(preview.sourceLines[0].suggestedTargetId).toBe(f.newLine.id);
+    await replace(f);
+    const [line] = await db.select().from(devisLineItems).where(eq(devisLineItems.id, f.newLine.id));
+    expect(line.description).toBe("Paint ceiling — architect wording");
+    expect(line.totalHt).toBe("100.00");
+    const [tr] = await db.select().from(devisTranslations).where(eq(devisTranslations.devisId, f.target.id));
+    expect((tr.lineTranslations as any[])[0]).toMatchObject({
+      originalDescription: line.description, translation: "Retained English wording", explanationFr: "Précision conservée",
+    });
   });
   it("does not auto-match changed prices, repeated rows or shifted unrelated rows", async () => {
     const f = await fixture();

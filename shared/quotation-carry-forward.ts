@@ -12,6 +12,7 @@ export const carryForwardSchema = z.object({
     targetLineId: z.number().int().positive(),
     context: z.boolean(),
     translation: z.boolean(),
+    wording: z.boolean().optional(),
   }).strict()).max(1000),
 }).strict();
 export type CarryForwardSelection = z.infer<typeof carryForwardSchema>;
@@ -24,9 +25,13 @@ export interface CarryLine {
   unitPriceHt: string;
   totalHt: string;
   translation: string | null;
+  explanation?: string | null;
+  explanationFr?: string | null;
   context: ContextDoc | null;
   imageCount: number;
   suggestedTargetId: number | null;
+  sourceIdentity?: import("./quotation-source-match").SourceMatchItem | null;
+  wordingChanged?: boolean;
 }
 export interface CarryForwardPreview {
   version: string;

@@ -9,6 +9,7 @@ import { quotationSigningIssues } from "@shared/quotation-signing-decision";
 import { checkExtractionCompleteness } from "./extraction-completeness";
 import { translationSnapshotIssues } from "./quotation-translation-coverage";
 import { quotationAmountsUnavailable } from "@shared/quotation-amount-availability";
+import { sourceRowsForCarriedWording } from "./quotation-carried-wording";
 
 /** Authoritative source/review rules, independent of transport and UI.
  * Delivery-specific insurance, recipients and question authorisations remain
@@ -16,6 +17,7 @@ import { quotationAmountsUnavailable } from "@shared/quotation-amount-availabili
 export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, action: QuotationAction,
   readPdf = getDocumentBuffer, options: { verifySourceBytes?: boolean } = {}): Promise<QuotationDecision> {
   const { quotation: d, translation: t } = s;
+  const sourceLines = sourceRowsForCarriedWording(d, s.lines, s.carryForwardAudits);
   const issues: QuotationIssue[] = quotationLifecycleIssues(d, action, s.archived);
   const add = (code: string, message: string, section: QuotationIssue["target"]["section"]) => issues.push(quotationIssue(code, message, section));
   const version = quotationDecisionVersion(s);
@@ -77,7 +79,7 @@ export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, ac
       }
     }
     if (parsed?.pricedItemVerification) {
-      issues.push(...pricedEvidenceIssues(parsed, s.lines));
+      issues.push(...pricedEvidenceIssues(parsed, sourceLines));
       if (parsed.nativeTableRecovery && (Math.round(Number(d.amountHt) * 100) !== Math.round(parsed.nativeTableRecovery.amountHt * 100)
         || Math.round(Number(d.amountTtc) * 100) !== Math.round(parsed.nativeTableRecovery.amountTtc * 100)))
         add("HEADER_TOTAL_MISMATCH", "Working header totals differ from the independently read original totals. Use Edit working quotation to reconcile the source.", "financial");
@@ -93,7 +95,7 @@ export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, ac
       }
       else if (parsed?.illustratedRecovery || parsed?.quotationVerification) {
         // Priced evidence was already evaluated above.
-        issues.push(...workingCoverageIssues({ ...parsed, pricedItemVerification: undefined }, s.lines));
+        issues.push(...workingCoverageIssues({ ...parsed, pricedItemVerification: undefined }, sourceLines));
       }
     }
   }

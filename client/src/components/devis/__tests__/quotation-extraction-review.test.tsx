@@ -74,6 +74,38 @@ it("links unverified charges to the affected original PDF page", async () => {
     .toHaveAttribute("href", "/api/devis/42/pdf?variant=original#page=5");
 });
 
+it("keeps candidate PDF document notes accessible separately from priced item wording", async () => {
+  const notes = [
+    "Conditions générales\nLe devis reste valable trente jours.",
+    "Toute modification nécessite un accord écrit. <strong>Texte original</strong>",
+  ];
+  fetchMock.mockImplementation((url: string) => Promise.resolve(response(url.includes("summary") ? summary : {
+    ...candidateData,
+    evidence: {
+      ...candidateData.evidence,
+      nativeTableRecovery: { parser: "numbered-table-v3", documentNotes: notes, evidence: [] },
+    },
+  })));
+  mount(); await ready();
+  const disclosure = screen.getByText("Original PDF document notes").closest("details")!;
+  expect(disclosure).not.toHaveAttribute("open");
+  fireEvent.click(screen.getByText("Original PDF document notes"));
+  const displayed = within(disclosure).getAllByRole("listitem");
+  expect(displayed.map(item => item.textContent)).toEqual(notes);
+  expect(displayed[0]).toBeVisible();
+  expect(displayed[0]).toHaveClass("whitespace-pre-wrap");
+  expect(displayed[1].querySelector("strong")).toBeNull();
+  const rows = screen.getByRole("region", { name: "Prepared candidate rows" });
+  expect(within(rows).getByText("Oak door, acoustic seal — complete contractor specification.")).toBeVisible();
+  for (const note of notes) expect(rows.textContent).not.toContain(note);
+  expect(fetchMock.mock.calls.filter(([, options]) => options.method === "POST")).toHaveLength(0);
+});
+
+it("omits document notes when none are supplied", async () => {
+  mount(); await ready();
+  expect(screen.queryByText("Original PDF document notes")).not.toBeInTheDocument();
+});
+
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status });
 }

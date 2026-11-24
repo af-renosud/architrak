@@ -146,7 +146,10 @@ export function QuotationExtractionReview({
   const verification = object(object(review.data?.evidence).quotationVerification);
   const pricedEvidence = object(object(review.data?.evidence).pricedItemVerification);
   const pricedIssues = entries(pricedEvidence.issues).map(object);
-  const nativeEvidence = entries(object(object(review.data?.evidence).nativeTableRecovery).evidence).map(object);
+  const nativeRecovery = object(object(review.data?.evidence).nativeTableRecovery);
+  const nativeEvidence = entries(nativeRecovery.evidence).map(object);
+  const documentNotes = entries(nativeRecovery.documentNotes).filter((note): note is string =>
+    typeof note === "string" && !!note.trim());
   const manifest = object(verification.manifest);
   const segments = entries(manifest.segments);
   const sections = entries(manifest.sections);
@@ -203,6 +206,12 @@ export function QuotationExtractionReview({
       {documentActions && <div className="review-source-document-links">{documentActions}</div>}
       {rescrapeAction && <div className="review-source-rescrape">{rescrapeAction}</div>}
     </nav>
+    {documentNotes.length > 0 && <details className="border rounded-md p-3 text-sm">
+      <summary className="cursor-pointer font-semibold">Original PDF document notes</summary>
+      <p className="text-muted-foreground my-2">Document-level preamble and legal text recovered from the original PDF, kept separate from priced item wording. Compare with the original PDF; this is not approval of the terms.</p>
+      <ul className="space-y-3">{documentNotes.map((note, index) =>
+        <li key={index} className="whitespace-pre-wrap break-words border-l border-border pl-3">{note}</li>)}</ul>
+    </details>}
     {nativeEvidence.length > 0 && <details className="border rounded-md p-3 text-sm">
       <summary className="cursor-pointer font-semibold">Original PDF evidence · {nativeEvidence.length} source-backed items</summary>
       <p className="text-muted-foreground my-2">Descriptions and charges recovered from the original text table. This is not architect approval; review the original layout before signing.</p>

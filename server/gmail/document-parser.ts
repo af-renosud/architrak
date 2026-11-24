@@ -71,7 +71,8 @@ export interface ParsedDocument {
   nativeTableRecovery?: {
     /** Unexamined header metadata must not overwrite previously extracted evidence. */
     metadataScope?: "table_only";
-    parser: "poste-table-v1" | "numbered-table-v2";
+    parser: "poste-table-v1" | "numbered-table-v2" | "numbered-table-v3";
+    documentNotes?: string[];
     sourceDigest: string;
     initialLineItems: ParsedDocument["lineItems"];
     evidence: Array<{ pages: number[]; priceText: string; sourceText: string }>;
@@ -2623,7 +2624,7 @@ async function parseDocumentWithinBudget(
         tvaAmount: Math.round((native.amountTtc - native.amountHt) * 100) / 100,
         tvaRate: native.tvaRate,
         rawText: texts.join("\n"),
-        nativeTableRecovery: { parser: "numbered-table-v2", metadataScope: "table_only",
+        nativeTableRecovery: { parser: "numbered-table-v3", metadataScope: "table_only", documentNotes: native.documentNotes,
           sourceDigest: quotationHash("sha256").update(pdfBuffer).digest("hex"),
           initialLineItems: [], evidence: native.evidence, amountHt: native.amountHt, amountTtc: native.amountTtc },
         extractionCoverage: { pdfPageCount: nativePageCount, nativeTextPageCount: nativePageCount,
@@ -2986,7 +2987,8 @@ async function parseDocumentWithinBudget(
       const native = numberedRecovery ?? recoverPosteTable(pageTexts);
       if (native && pageTexts.length === images.length && pdfPageCount === images.length) {
         parsed.nativeTableRecovery = {
-          parser: numberedRecovery ? "numbered-table-v2" : "poste-table-v1",
+          parser: numberedRecovery ? "numbered-table-v3" : "poste-table-v1",
+          documentNotes: numberedRecovery?.documentNotes,
           sourceDigest: quotationHash("sha256").update(pdfBuffer).digest("hex"),
           initialLineItems: structuredClone(parsed.lineItems),
           evidence: native.evidence, amountHt: native.amountHt, amountTtc: native.amountTtc,

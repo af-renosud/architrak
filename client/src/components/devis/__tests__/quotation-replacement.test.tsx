@@ -39,7 +39,7 @@ async function review() {
   await choose();
   fireEvent.change(screen.getByLabelText("Internal context (required)"), { target: { value: "Revised scope agreed at site meeting." } });
   fireEvent.click(screen.getByTestId("button-retain-previous-work"));
-  fireEvent.click(screen.getByLabelText(/Proceed without copying previous work/));
+  await waitFor(() => expect(screen.getByTestId("button-review-replacement")).toBeEnabled());
   fireEvent.click(screen.getByTestId("button-review-replacement"));
 }
 

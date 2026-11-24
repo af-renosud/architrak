@@ -6,6 +6,7 @@ import type { ArchitectCorrectionDraft } from "@shared/architect-quotation";
 import { quotationWorkingVersion, stableQuotationDigest } from "./quotation-working-version";
 
 export interface QuotationDecisionSnapshot {
+  carryForwardAudits?: unknown[];
   translationVerificationFingerprints?: string[];
   quotation: Devis;
   lines: DevisLineItem[];
@@ -25,6 +26,8 @@ export async function readQuotationDecisionSnapshot(tx: Reader, id: number): Pro
   const result = await tx.execute(sql`SELECT row_to_json(d) AS quotation,
     (SELECT json_agg(l ORDER BY l.line_number,l.id) FROM devis_line_items l WHERE l.devis_id=d.id) AS lines,
     row_to_json(t) AS translation,row_to_json(b) AS baseline,row_to_json(s) AS state,p.archived_at,p.status AS project_status,
+    (SELECT json_agg(a.after_snapshot) FROM quotation_architect_audit a
+      WHERE a.devis_id=d.id AND a.after_snapshot->>'kind'='carry_forward') AS carry_forward_audits,
     (SELECT json_agg(e.snapshot->>'fingerprint') FROM quotation_extraction_events e
       WHERE e.devis_id=d.id AND e.outcome='translation_verified') AS translation_receipts
     FROM devis d JOIN projects p ON p.id=d.project_id
@@ -33,7 +36,7 @@ export async function readQuotationDecisionSnapshot(tx: Reader, id: number): Pro
     LEFT JOIN quotation_architect_state s ON s.devis_id=d.id WHERE d.id=${id}`);
   const raw = result.rows[0] as any;
   if (!raw) return null;
-  return { quotation, lines, translation, translationVerificationFingerprints: raw.translation_receipts ?? [],
+  return { quotation, lines, translation, carryForwardAudits: raw.carry_forward_audits ?? [], translationVerificationFingerprints: raw.translation_receipts ?? [],
     archived: !!raw.archived_at || raw.project_status === "archived",
     baseline: raw.baseline ? { ttc: String(raw.baseline.ttc), sourceDigest: raw.baseline.source_digest, storageKey: raw.baseline.source_storage_key } : null,
     draft: draftFrom({ ...raw, lines: raw.lines ?? [] }), hasCorrection: !!raw.state };
@@ -52,6 +55,8 @@ export function loadProjectQuotationDecisionSnapshots(projectId: number): Promis
     const metadata = await tx.execute(sql`SELECT d.id,row_to_json(d) AS quotation,
       row_to_json(t) AS translation,row_to_json(b) AS baseline,row_to_json(s) AS state,
       p.archived_at,p.status AS project_status,
+      (SELECT json_agg(a.after_snapshot) FROM quotation_architect_audit a
+        WHERE a.devis_id=d.id AND a.after_snapshot->>'kind'='carry_forward') AS carry_forward_audits,
       (SELECT json_agg(e.snapshot->>'fingerprint') FROM quotation_extraction_events e
         WHERE e.devis_id=d.id AND e.outcome='translation_verified') AS translation_receipts,
       (SELECT json_agg(l ORDER BY l.line_number,l.id) FROM devis_line_items l WHERE l.devis_id=d.id) AS lines
@@ -63,7 +68,7 @@ export function loadProjectQuotationDecisionSnapshots(projectId: number): Promis
     for (const quotation of quotations) {
       const raw = metadata.rows.find(r => Number(r.id) === quotation.id) as any;
       if (!raw) continue;
-      result.set(quotation.id, { quotation, lines: lines.filter(l => l.devisId === quotation.id),
+      result.set(quotation.id, { quotation, carryForwardAudits: raw.carry_forward_audits ?? [], lines: lines.filter(l => l.devisId === quotation.id),
         translation: translations.find(t => t.devisId === quotation.id), translationVerificationFingerprints: raw.translation_receipts ?? [],
         archived: !!raw.archived_at || raw.project_status === "archived",
         baseline: raw.baseline ? { ttc: String(raw.baseline.ttc), sourceDigest: raw.baseline.source_digest, storageKey: raw.baseline.source_storage_key } : null,
@@ -75,6 +80,7 @@ export function loadProjectQuotationDecisionSnapshots(projectId: number): Promis
 export function quotationDecisionVersion(s: QuotationDecisionSnapshot) {
   return stableQuotationDigest({ working: quotationWorkingVersion(s.quotation, s.lines, s.translation),
     baseline: s.baseline, draft: s.draft, hasCorrection: s.hasCorrection, archived: s.archived,
+    carryForwardAudits: s.carryForwardAudits ?? [],
     translationReceipts: [...(s.translationVerificationFingerprints ?? [])].sort() });
 }
 /** Stable while PDF cache/envelope transport metadata is being persisted.
