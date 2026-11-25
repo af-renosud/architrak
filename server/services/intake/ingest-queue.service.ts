@@ -35,6 +35,7 @@
 
 import crypto from "crypto";
 import { assertIntakeWorkerAlive, withIntakeWorkerLock } from "./worker-lock";
+import { describeErrorWithCause, isTransientDatabaseError } from "./transient-db-error";
 import { storage } from "../../storage";
 import { db } from "../../db";
 import { getDocumentBuffer } from "../../storage/object-storage";
@@ -228,8 +229,11 @@ async function attemptOwnedIntakeJob(jobId: number): Promise<void> {
     await storage.markIntakeJobSucceeded({ jobId: row.id, attempts: attemptNum, claimedAt: row.lastAttemptAt! });
   } catch (err) {
     await assertIntakeWorkerAlive();
-    const transient = err instanceof TransientIntakeError;
-    const message = err instanceof Error ? err.message : String(err);
+    // Infrastructure database failures (dropped connection, timeout, deadlock)
+    // get the same bounded retries as other transient failures; the stored
+    // message keeps the underlying cause instead of only Drizzle's wrapper.
+    const transient = err instanceof TransientIntakeError || isTransientDatabaseError(err);
+    const message = describeErrorWithCause(err);
     const exhausted = attemptNum >= MAX_INTAKE_ATTEMPTS;
     if (!transient || exhausted) {
       // Permanent failure (or retries exhausted): dead-letter the queue
