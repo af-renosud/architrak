@@ -126,6 +126,19 @@ describe("collapsed quotation client visibility", () => {
     expect(screen.getByRole("button", { name: "Share full quotation" })).toBeEnabled();
   });
 
+  it("warns when the client sees an older sealed copy and updates it explicitly", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(key, { token: activeLink, publishedDevisIds: [42], clientCopies: { 42: { count: 2, outdated: true, clientVisible: true } } });
+    render(<QueryClientProvider client={client}>
+      <ProjectSharePublishControl projectId="24" devisId={42} quotation={unsigned} isArchived={false} />
+    </QueryClientProvider>);
+    expect(screen.getByTestId("text-client-copy-outdated-42")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Show sealed client copies (2)" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Update the client's copy" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith("POST", "/api/devis/42/client-releases/update"));
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: key }));
+  });
+
   it("reuses fresh project state across many collapsed cards without extra requests", () => {
     const queryFn = vi.fn();
     const client = new QueryClient({ defaultOptions: { queries: { queryFn, retry: false } } });

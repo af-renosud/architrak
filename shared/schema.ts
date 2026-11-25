@@ -3786,6 +3786,38 @@ export type ClientProjectShareDevis = typeof clientProjectShareDevis.$inferSelec
 export type InsertClientProjectShareDevis = z.infer<typeof insertClientProjectShareDevisSchema>;
 
 /**
+ * client_quotation_releases — sealed, append-only copies of exactly what a
+ * client can see for a quotation: the frozen page content, copied context
+ * images and the copied EN+FR package PDF (with SHA-256). Every client
+ * surface serves the latest row for the devis, never live data. A DB
+ * trigger refuses UPDATE/DELETE. No FKs on purpose: the audit record must
+ * outlive the quotation/project.
+ */
+export const clientQuotationReleases = pgTable("client_quotation_releases", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull(),
+  devisId: integer("devis_id").notNull(),
+  devisCode: text("devis_code").notNull(),
+  reason: text("reason").notNull(),
+  contentVersion: text("content_version").notNull(),
+  payload: jsonb("payload").notNull(),
+  images: jsonb("images").notNull().default(sql`'[]'::jsonb`),
+  packageStorageKey: text("package_storage_key"),
+  packageSha256: text("package_sha256"),
+  packageBytes: integer("package_bytes"),
+  originalStorageKey: text("original_storage_key"),
+  originalSha256: text("original_sha256"),
+  sealedByUserId: integer("sealed_by_user_id"),
+  sealedAt: timestamp("sealed_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+  index("client_quotation_releases_devis_idx").on(table.devisId, table.id),
+  index("client_quotation_releases_project_idx").on(table.projectId),
+  check("client_quotation_releases_reason_check", sql`${table.reason} IN ('publish','update','client_link','backfill')`),
+  check("client_quotation_releases_package_check", sql`(${table.packageStorageKey} IS NULL AND ${table.packageSha256} IS NULL AND ${table.packageBytes} IS NULL) OR (${table.packageStorageKey} IS NOT NULL AND ${table.packageSha256} IS NOT NULL AND ${table.packageBytes} > 0)`),
+]);
+export type ClientQuotationRelease = typeof clientQuotationReleases.$inferSelect;
+
+/**
  * client_project_share_audit — append-only audit trail of every architect
  * action on the project share link (Task #394). Membership rows are DELETEd
  * on unpublish, so without this table there is no history of who removed a
@@ -3804,6 +3836,8 @@ export const CLIENT_PROJECT_SHARE_AUDIT_ACTIONS = [
   "revoke",
   "publish",
   "unpublish",
+  // Architect replaced the sealed client copy with a newly sealed version.
+  "update_copy",
   // Task #409 — ArchiDoc fetched the live link server-to-server (read-only;
   // logged at most once per token per day).
   "archidoc_lookup",

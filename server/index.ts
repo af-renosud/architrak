@@ -314,6 +314,15 @@ app.use((req, res, next) => {
     console.error("[LineContext] failed to start orphan sweeper:", err);
   }
 
+  // Seal a client copy for quotations clients could already see before
+  // sealed copies existed (client pages show nothing until sealed).
+  try {
+    const { startClientReleaseBackfill } = await import("./services/client-quotation-release");
+    startClientReleaseBackfill();
+  } catch (err) {
+    console.error("[ClientRelease] failed to start backfill:", err);
+  }
+
   // AT5 (Task #153): outbound webhook delivery sweeper. Drains
   // `webhook_deliveries_out` rows whose next_attempt_at is due. The
   // sweeper is idempotent and safe to start in dev — it will simply

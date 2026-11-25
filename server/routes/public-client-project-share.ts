@@ -1,7 +1,15 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
-import { streamClientContextImage } from "../services/client-context-image";
+import {
+  getLatestClientRelease,
+  liveClientDialogue,
+  releasePayloadForClient,
+  streamReleaseImage,
+  streamReleaseOriginal,
+  streamReleasePackage,
+  type FrozenClientPayload,
+} from "../services/client-quotation-release";
 import { validateRequest } from "../middleware/validate";
 import { rateLimit } from "../middleware/rate-limit";
 import {
@@ -12,12 +20,10 @@ import {
 } from "../services/client-project-share";
 import {
   classifyVerdict,
-  buildClientPortalPayload,
   renderClientPortalShell,
   performClientReply,
   performClientQuery,
   retiredVerdictHandler,
-  streamCombinedPackagePdf,
 } from "./public-client-checks";
 import { getDocumentStream } from "../storage/object-storage";
 import { getProjectFinancialSummary } from "../services/financial-summary.service";
@@ -134,11 +140,12 @@ export async function buildProjectSharePayload(
       });
       continue;
     }
-    const [translation, analysis, checks] = await Promise.all([
-      storage.getDevisTranslation(devis.id),
-      storage.getDevisCostAnalysis(devis.id),
-      storage.listClientChecks(devis.id),
-    ]);
+    // Published working quotations show ONLY their sealed client copy.
+    // Until a copy is sealed, the quotation is not shown at all.
+    const release = await getLatestClientRelease(devis.id);
+    if (!release) continue;
+    const frozen = release.payload as FrozenClientPayload;
+    const checks = await storage.listClientChecks(devis.id);
     const openQuestionCount = checks.filter(
       (c) => c.status === "open" && classifyVerdict(c) === null,
     ).length;
@@ -148,15 +155,15 @@ export async function buildProjectSharePayload(
       : (devis.lotRefText ?? null);
     quotations.push({
       id: devis.id,
-      ref: devis.devisCode,
-      documentRef: devis.devisNumber,
+      ref: frozen.devis.ref,
+      documentRef: frozen.devis.documentRef ?? null,
       trade: trade ?? null,
-      description: devis.descriptionFr ?? null,
-      descriptionEn: devis.descriptionUk ?? null,
-      amountHt: devis.amountHt ?? null,
-      amountTtc: devis.amountTtc ?? null,
-      translationAvailable: translation?.status === "finalised",
-      analysisAvailable: analysis?.status === "confirmed",
+      description: frozen.devis.description ?? null,
+      descriptionEn: frozen.devis.descriptionEn ?? null,
+      amountHt: frozen.devis.amountHt ?? null,
+      amountTtc: frozen.devis.amountTtc ?? null,
+      translationAvailable: frozen.packageAvailable,
+      analysisAvailable: !!frozen.analysisHtml,
       openQuestionCount,
       status: publicStatus(devis),
       commitmentEligible: quotationCommitmentStatus(devis) === "signed",
@@ -415,15 +422,17 @@ router.get(
   validateRequest({ params: detailParams }),
   detailEndpoint(async (t, devis, _req, res) => {
     await storage.touchProjectShareTokenUsed(t.id, computeTokenExpiry());
-    const payload = await buildClientPortalPayload(devis, {
+    const release = await getLatestClientRelease(devis.id);
+    const live = release ? await liveClientDialogue(devis, {
       clientName: t.clientName ?? null,
       clientEmail: t.clientEmail,
-    }, `/p/client/project/${encodeURIComponent(tokenFromReq(_req))}/devis/${devis.id}`);
-    if (!payload) {
+    }) : null;
+    if (!release || !live) {
       res.status(404).json({ message: "Quotation not found" });
       return;
     }
-    res.json(payload);
+    res.json(releasePayloadForClient(release, live,
+      `/p/client/project/${encodeURIComponent(tokenFromReq(_req))}/devis/${devis.id}`));
   }),
 );
 
@@ -431,7 +440,7 @@ router.get(
 router.get("/p/client/project/:token/devis/:devisId/context-assets/:assetId",
   shareReadIpLimiter, shareImageLimiter,
   detailEndpoint(async (_t, devis, req, res) => {
-    await streamClientContextImage(devis.id, String(req.params.assetId), res);
+    await streamReleaseImage(await getLatestClientRelease(devis.id), String(req.params.assetId), res);
   }));
 
 router.get(
@@ -439,21 +448,8 @@ router.get(
   shareReadIpLimiter, shareReadTokenLimiter,
   validateRequest({ params: detailParams }),
   detailEndpoint(async (t, devis, _req, res) => {
-    if (!devis.pdfStorageKey) {
-      res.status(404).json({ message: "PDF unavailable" });
-      return;
-    }
-    try {
-      const doc = await getDocumentStream(devis.pdfStorageKey);
-      res.setHeader("Content-Type", doc.contentType || "application/pdf");
-      res.setHeader("Content-Disposition", `inline; filename="devis-${devis.devisCode}.pdf"`);
-      res.setHeader("X-Content-Type-Options", "nosniff");
-      await storage.touchProjectShareTokenUsed(t.id, computeTokenExpiry());
-      doc.stream.pipe(res);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "PDF read error";
-      res.status(500).json({ message: msg });
-    }
+    await storage.touchProjectShareTokenUsed(t.id, computeTokenExpiry());
+    await streamReleaseOriginal(await getLatestClientRelease(devis.id), res);
   }),
 );
 
@@ -505,7 +501,7 @@ router.get(
   validateRequest({ params: detailParams }),
   detailEndpoint(async (t, devis, _req, res) => {
     await storage.touchProjectShareTokenUsed(t.id, computeTokenExpiry());
-    await streamCombinedPackagePdf(devis, res);
+    await streamReleasePackage(await getLatestClientRelease(devis.id), res);
   }),
 );
 

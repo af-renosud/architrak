@@ -14,6 +14,14 @@ import { readQuotationDecisionSnapshot } from "./quotation-decision-snapshot";
 import { db } from "../db";
 import { and, eq, sql } from "drizzle-orm";
 import { clientProjectShareTokens, clientProjectShareDevis, clientProjectShareAudit } from "@shared/schema";
+import {
+  ClientReleaseChangedError,
+  commitClientRelease,
+  getLatestClientRelease,
+  lockClientContent,
+  prepareClientRelease,
+  readClientContentVersion,
+} from "./client-quotation-release";
 
 export { encryptShareUrl, decryptShareUrl };
 
@@ -95,24 +103,84 @@ export async function getPublishBlockReason(devis: Devis): Promise<string | null
 /** Publication is a decision AND a write under the quotation and token locks.
  * Editing approval/context, replacement and token rotation cannot race disclosure. */
 export async function publishReviewedQuotation(projectId: number, tokenId: number, devisId: number, actorUserId: number | null) {
-  return db.transaction(async tx => {
-    await tx.execute(sql`SELECT id FROM devis WHERE id=${devisId} FOR UPDATE`);
-    const [token] = await tx.select().from(clientProjectShareTokens).where(and(
-      eq(clientProjectShareTokens.id, tokenId), eq(clientProjectShareTokens.projectId, projectId))).for("share");
-    if (!token || token.revokedAt || isTokenExpired(token)) return { ok: false as const, message: "Client link changed or expired. Refresh before publishing." };
-    await tx.execute(sql`SELECT id FROM projects WHERE id=${projectId} FOR SHARE`);
-    await tx.execute(sql`SELECT id FROM devis_line_items WHERE devis_id=${devisId} FOR SHARE`);
-    await tx.execute(sql`SELECT devis_id FROM devis_translations WHERE devis_id=${devisId} FOR SHARE`);
-    const snapshot = await readQuotationDecisionSnapshot(tx, devisId);
-    if (!snapshot || snapshot.quotation.projectId !== projectId) return { ok: false as const, message: "Quotation not found in this project." };
-    const decision = await evaluateQuotationDecision(snapshot, "client_link");
-    if (!decision.allowed) return { ok: false as const, message: decision.issues.find(i => i.severity === "blocker")!.message, decision };
-    const inserted = await tx.insert(clientProjectShareDevis).values({ tokenId, devisId, publishedByUserId: actorUserId })
-      .onConflictDoNothing().returning();
-    if (inserted.length) await tx.insert(clientProjectShareAudit).values({ projectId, tokenId, devisId, actorUserId,
-      action: "publish", detail: `Devis ${snapshot.quotation.devisCode} publié après vérification de la version ${decision.version}.` });
-    return { ok: true as const };
-  });
+  // Cheap gate first so a blocked publish never waits for package generation.
+  const early = await quotationActionDecision(devisId, "client_link");
+  if (!early.allowed) return { ok: false as const, message: early.issues.find(i => i.severity === "blocker")!.message, decision: early };
+  // Seal the client copy BEFORE taking locks (package generation can take a
+  // minute); the commit below proves the content is still that version.
+  const latest = await getLatestClientRelease(devisId);
+  const currentVersion = await readClientContentVersion(db, devisId);
+  const prepared = latest && latest.contentVersion === currentVersion ? null : await prepareClientRelease(devisId);
+  try {
+    return await db.transaction(async tx => {
+      await lockClientContent(tx, devisId);
+      const [token] = await tx.select().from(clientProjectShareTokens).where(and(
+        eq(clientProjectShareTokens.id, tokenId), eq(clientProjectShareTokens.projectId, projectId))).for("share");
+      if (!token || token.revokedAt || isTokenExpired(token)) return { ok: false as const, message: "Client link changed or expired. Refresh before publishing." };
+      await tx.execute(sql`SELECT id FROM projects WHERE id=${projectId} FOR SHARE`);
+      const snapshot = await readQuotationDecisionSnapshot(tx, devisId);
+      if (!snapshot || snapshot.quotation.projectId !== projectId) return { ok: false as const, message: "Quotation not found in this project." };
+      const decision = await evaluateQuotationDecision(snapshot, "client_link");
+      if (!decision.allowed) return { ok: false as const, message: decision.issues.find(i => i.severity === "blocker")!.message, decision };
+      const release = prepared
+        ? await commitClientRelease(tx, prepared, "publish", actorUserId)
+        : await getLatestClientRelease(devisId, tx);
+      if (!release || release.contentVersion !== decision.contentVersion) throw new ClientReleaseChangedError();
+      const inserted = await tx.insert(clientProjectShareDevis).values({ tokenId, devisId, publishedByUserId: actorUserId })
+        .onConflictDoNothing().returning();
+      if (inserted.length || prepared) await tx.insert(clientProjectShareAudit).values({ projectId, tokenId, devisId, actorUserId,
+        action: "publish", detail: `Devis ${snapshot.quotation.devisCode} publié après vérification de la version ${decision.version} — copie client scellée n°${release.id} (PDF SHA-256 ${release.packageSha256 ?? "—"}).` });
+      return { ok: true as const, releaseId: release.id };
+    });
+  } catch (err) {
+    if (err instanceof ClientReleaseChangedError) return { ok: false as const, message: err.message };
+    throw err;
+  }
+}
+
+/** True when a client can currently reach this quotation's working content
+ * (published on an active project link, or an active per-quotation link). */
+export async function isQuotationClientVisible(devisId: number): Promise<boolean> {
+  const r = await db.execute(sql`SELECT
+    EXISTS (SELECT 1 FROM client_project_share_devis m JOIN client_project_share_tokens t ON t.id=m.token_id
+      WHERE m.devis_id=${devisId} AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > now()))
+    OR EXISTS (SELECT 1 FROM client_check_tokens c
+      WHERE c.devis_id=${devisId} AND c.revoked_at IS NULL AND (c.expires_at IS NULL OR c.expires_at > now())) AS visible`);
+  return r.rows[0]?.visible === true;
+}
+
+/**
+ * Replace what the client sees with a newly sealed copy of the CURRENT,
+ * reviewed content. Same approval gate as publishing; the previous copies
+ * remain on record.
+ */
+export async function updateClientCopy(devisId: number, actorUserId: number | null) {
+  if (!await isQuotationClientVisible(devisId)) {
+    return { ok: false as const, message: "This quotation is not currently shared with the client." };
+  }
+  const early = await quotationActionDecision(devisId, "client_link");
+  if (!early.allowed) return { ok: false as const, message: early.issues.find(i => i.severity === "blocker")!.message, decision: early };
+  const latest = await getLatestClientRelease(devisId);
+  if (latest && latest.contentVersion === await readClientContentVersion(db, devisId)) {
+    return { ok: true as const, releaseId: latest.id, unchanged: true };
+  }
+  const prepared = await prepareClientRelease(devisId);
+  try {
+    return await db.transaction(async tx => {
+      await lockClientContent(tx, devisId);
+      const snapshot = await readQuotationDecisionSnapshot(tx, devisId);
+      if (!snapshot) return { ok: false as const, message: "Quotation not found." };
+      const decision = await evaluateQuotationDecision(snapshot, "client_link");
+      if (!decision.allowed) return { ok: false as const, message: decision.issues.find(i => i.severity === "blocker")!.message, decision };
+      const release = await commitClientRelease(tx, prepared, "update", actorUserId);
+      await tx.insert(clientProjectShareAudit).values({ projectId: snapshot.quotation.projectId, devisId, actorUserId,
+        action: "update_copy", detail: `Copie client du devis ${snapshot.quotation.devisCode} mise à jour après vérification de la version ${decision.version} — copie scellée n°${release.id} (PDF SHA-256 ${release.packageSha256 ?? "—"}).` });
+      return { ok: true as const, releaseId: release.id, unchanged: false };
+    });
+  } catch (err) {
+    if (err instanceof ClientReleaseChangedError) return { ok: false as const, message: err.message };
+    throw err;
+  }
 }
 
 /**

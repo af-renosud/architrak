@@ -13,6 +13,7 @@ import {
 import { env } from "../env";
 import { buildClientPortalPayload, renderClientPortalShell, streamCombinedPackagePdf } from "./public-client-checks";
 import { getDocumentStream } from "../storage/object-storage";
+import { ClientReleaseChangedError, ensureCurrentClientRelease } from "../services/client-quotation-release";
 import {
   isValidRecipientEmail,
   sendCommunication,
@@ -333,6 +334,16 @@ router.post(
     }
     if (!env.PUBLIC_BASE_URL) {
       return res.status(500).json({ message: "PUBLIC_BASE_URL is not configured" });
+    }
+    // Seal the client copy BEFORE the link exists: the portal only ever
+    // serves sealed content, so the client sees exactly what is on record.
+    try {
+      await ensureCurrentClientRelease(devisId, "client_link", Number(userId));
+    } catch (err) {
+      return res.status(err instanceof ClientReleaseChangedError ? 409 : 502).json({
+        message: err instanceof ClientReleaseChangedError ? err.message
+          : `The client copy could not be sealed, so no link was sent: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
     const clientName = req.body.clientName || null;
     const issued = await issueClientCheckTokenEmail({

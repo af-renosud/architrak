@@ -5,6 +5,7 @@ import type { AddressInfo } from "net";
 const { serviceMock, emailMock } = vi.hoisted(() => ({
   serviceMock: {
     issueClientCheckTokenEmail: vi.fn(),
+    ensureCurrentClientRelease: vi.fn(),
   },
   emailMock: {
     sendCommunication: vi.fn(),
@@ -34,6 +35,11 @@ vi.mock("../../services/client-checks", () => ({
   computeTokenExpiry: () => new Date("2026-12-01T00:00:00.000Z"),
   isTokenExpired: (token: { expiresAt: Date | null }) =>
     !!token.expiresAt && token.expiresAt.getTime() <= Date.now(),
+}));
+
+vi.mock("../../services/client-quotation-release", () => ({
+  ensureCurrentClientRelease: serviceMock.ensureCurrentClientRelease,
+  ClientReleaseChangedError: class ClientReleaseChangedError extends Error {},
 }));
 
 vi.mock("../../communications/email-sender", () => {
@@ -133,6 +139,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  serviceMock.ensureCurrentClientRelease.mockResolvedValue({ release: { id: 1 }, created: true });
   storageMock.getDevis.mockResolvedValue({
     id: 100,
     projectId: 9,
@@ -224,6 +231,9 @@ describe("per-devis client link email", () => {
       createdByUserId: 1,
     }));
     expect(emailMock.sendCommunication).toHaveBeenCalledWith(501, { sentByUserId: 1 });
+    expect(serviceMock.ensureCurrentClientRelease).toHaveBeenCalledWith(100, "client_link", 1);
+    expect(serviceMock.ensureCurrentClientRelease.mock.invocationCallOrder[0])
+      .toBeLessThan(serviceMock.issueClientCheckTokenEmail.mock.invocationCallOrder[0]);
     const body = await res.json();
     expect(body.token.tokenHash).toBeUndefined();
     expect(body.delivery).toMatchObject({
@@ -232,6 +242,17 @@ describe("per-devis client link email", () => {
       sentAt: "2026-09-05T09:01:00.000Z",
     });
     expect(body.delivery.body).toBeUndefined();
+  });
+
+  it("sends no link when the client copy cannot be sealed", async () => {
+    serviceMock.ensureCurrentClientRelease.mockRejectedValueOnce(new Error("storage down"));
+    const res = await post("/api/devis/100/client-check-token/issue", {
+      clientEmail: "marie@example.test",
+      message: "Please review this quotation.",
+    });
+    expect(res.status).toBe(502);
+    expect(serviceMock.issueClientCheckTokenEmail).not.toHaveBeenCalled();
+    expect(emailMock.sendCommunication).not.toHaveBeenCalled();
   });
 
   it("leaves failed delivery visible without a false sent timestamp", async () => {

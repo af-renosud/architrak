@@ -99,6 +99,7 @@ import { Amount } from "@/components/ui/amount";
 import { formatCurrency as fmt } from "@/lib/utils";
 import { normalizeRef } from "@shared/intake-dedup";
 import { DuplicateExtractionHistory } from "@/components/devis/DuplicateExtractionHistory";
+import { ClientSealedCopies, type ClientCopySummary } from "@/components/devis/ClientSealedCopies";
 import { commitmentLabel, type FinancialSummary as ProjectFinancialSummary } from "@/lib/financial-summary";
 
 export type LotCodeValue = {
@@ -4363,6 +4364,8 @@ type ProjectShareState = {
   // Task #410 — set when ArchiDoc recently (last 7 days) asked for the
   // client link and couldn't get it. Cleared by the next successful lookup.
   archidocLookupMiss?: { reason: "expired" | "rotate_required"; lastMissAt: string } | null;
+  // Sealed client copies per quotation (count, outdated vs live content).
+  clientCopies?: Record<number, ClientCopySummary>;
 };
 
 function useProjectShareState(projectId: string) {
@@ -4382,7 +4385,7 @@ function invalidateProjectShare(projectId: string) {
 // extend / revoke / publish / unpublish), newest first.
 type ProjectShareAuditEntry = {
   id: number;
-  action: "issue" | "rotate" | "extend" | "revoke" | "publish" | "unpublish" | "archidoc_lookup" | "budget_update";
+  action: "issue" | "rotate" | "extend" | "revoke" | "publish" | "unpublish" | "update_copy" | "archidoc_lookup" | "budget_update";
   devisId: number | null;
   detail: string;
   createdAt: string;
@@ -4395,6 +4398,7 @@ const SHARE_AUDIT_ACTION_STYLES: Record<ProjectShareAuditEntry["action"], string
   revoke: "bg-rose-50 text-rose-700 border-rose-200",
   publish: "bg-emerald-50 text-emerald-700 border-emerald-200",
   unpublish: "bg-amber-50 text-amber-700 border-amber-200",
+  update_copy: "bg-emerald-50 text-emerald-700 border-emerald-200",
   // Task #409 — ArchiDoc consumed the link (read-only, informational).
   archidoc_lookup: "bg-slate-50 text-slate-600 border-slate-200",
   budget_update: "bg-[#c1a27b]/10 text-[#0B2545] border-[#c1a27b]/40",
@@ -4812,7 +4816,11 @@ export function ProjectSharePublishControl({
       const res = await apiRequest("POST", `/api/projects/${projectId}/client-share/publish`, { devisId });
       return res.json();
     },
-    onSuccess: () => { invalidateProjectShare(projectId); toast({ title: "Devis published on the client link" }); },
+    onSuccess: () => {
+      invalidateProjectShare(projectId);
+      queryClient.invalidateQueries({ queryKey: ["/api/devis", devisId, "client-releases"] });
+      toast({ title: "Devis published on the client link", description: "A sealed copy of exactly what the client sees has been saved." });
+    },
     onError: (error: Error) => toast({ title: "Cannot publish", description: error.message, variant: "destructive" }),
   });
 
@@ -4866,6 +4874,12 @@ export function ProjectSharePublishControl({
             {signed ? "Client access needs a valid project link." : published ? "Sharing is saved, but client access needs a valid project link." : "A valid project client link is required to share."} Issue or renew it at the top of the Devis tab.
           </p>
         )}
+        <ClientSealedCopies
+          devisId={devisId}
+          isArchived={isArchived}
+          summary={data.clientCopies?.[devisId]}
+          onUpdated={() => invalidateProjectShare(projectId)}
+        />
       </div>
       {!signed && !inactive && !isArchived && (
         published ? (
@@ -4890,7 +4904,7 @@ export function ProjectSharePublishControl({
             disabled={busy || !hasActiveLink}
             data-testid={`button-publish-devis-${devisId}`}
           >
-            {publishMutation.isPending ? "Sharing…" : "Share full quotation"}
+            {publishMutation.isPending ? "Sealing client copy…" : "Share full quotation"}
           </Button>
         )
       )}

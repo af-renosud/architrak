@@ -1,7 +1,14 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
 import { storage } from "../storage";
-import { streamClientContextImage } from "../services/client-context-image";
+import {
+  getLatestClientRelease,
+  liveClientDialogue,
+  releasePayloadForClient,
+  streamReleaseImage,
+  streamReleaseOriginal,
+  streamReleasePackage,
+} from "../services/client-quotation-release";
 import { validateRequest } from "../middleware/validate";
 import { rateLimit } from "../middleware/rate-limit";
 import {
@@ -498,12 +505,16 @@ router.get(
 
     const devis = await storage.getDevis(t.devisId);
     if (!devis) return res.status(404).json({ message: "Devis not found" });
-    const payload = await buildClientPortalPayload(devis, {
+    // Quotation content comes ONLY from the sealed client copy; dialogue is live.
+    const release = await getLatestClientRelease(devis.id);
+    const live = release ? await liveClientDialogue(devis, {
       clientName: t.clientName,
       clientEmail: t.clientEmail,
-    }, `/p/client/${encodeURIComponent(tokenFromReq(req))}`);
-    if (!payload) return res.status(404).json({ message: "Devis not found" });
-    res.json(payload);
+    }) : null;
+    if (!release || !live) {
+      return res.status(503).json({ message: "This quotation is being prepared. Please check back shortly." });
+    }
+    res.json(releasePayloadForClient(release, live, `/p/client/${encodeURIComponent(tokenFromReq(req))}`));
   },
 );
 
@@ -513,7 +524,7 @@ router.get("/p/client/:token/context-assets/:assetId",
   async (req, res) => {
     const lookup = await resolveClientCheckToken(tokenFromReq(req));
     if (!lookup.ok) return res.sendStatus(lookup.reason === "expired" ? 410 : 404);
-    await streamClientContextImage(lookup.token.devisId, String(req.params.assetId), res);
+    await streamReleaseImage(await getLatestClientRelease(lookup.token.devisId), String(req.params.assetId), res);
   });
 
 router.post(
@@ -605,19 +616,8 @@ router.get(
       return res.status(status).json({ message, expired: lookup.reason === "expired" });
     }
     const t = lookup.token;
-    const devis = await storage.getDevis(t.devisId);
-    if (!devis?.pdfStorageKey) return res.status(404).json({ message: "PDF unavailable" });
-    try {
-      const doc = await getDocumentStream(devis.pdfStorageKey);
-      res.setHeader("Content-Type", doc.contentType || "application/pdf");
-      res.setHeader("Content-Disposition", `inline; filename="devis-${devis.devisCode}.pdf"`);
-      res.setHeader("X-Content-Type-Options", "nosniff");
-      await touchToken(t);
-      doc.stream.pipe(res);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "PDF read error";
-      res.status(500).json({ message: msg });
-    }
+    await touchToken(t);
+    await streamReleaseOriginal(await getLatestClientRelease(t.devisId), res);
   },
 );
 
@@ -676,10 +676,8 @@ router.get(
       return res.status(status).json({ message, expired: lookup.reason === "expired" });
     }
     const t = lookup.token;
-    const devis = await storage.getDevis(t.devisId);
-    if (!devis) return res.status(404).json({ message: "Devis not found" });
     await touchToken(t);
-    await streamCombinedPackagePdf(devis, res);
+    await streamReleasePackage(await getLatestClientRelease(t.devisId), res);
   },
 );
 

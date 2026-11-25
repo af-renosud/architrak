@@ -226,6 +226,12 @@ async function loadData() {
       '</div>';
     return null;
   }
+  if (r.status === 503) {
+    const j = await r.json().catch(() => ({}));
+    document.getElementById("root").innerHTML = '<div class="empty" data-testid="text-client-preparing">' +
+      escapeHtml(j.message || "This quotation is being prepared. Please check back shortly.") + ' <button onclick="refresh()">Retry</button></div>';
+    return null;
+  }
   if (!r.ok) {
     const message = r.status === 401
       ? "Your sign-in session has ended. Sign in to ArchiTrak again, then reopen this preview."
@@ -287,10 +293,13 @@ function renderDevisInfo(data) {
     ? '<p class="devis-total" data-testid="text-devis-amount-ttc"><strong>Total payable TTC (including VAT): ' + escapeHtml(d.amountTtc) + ' €</strong></p>'
     : '<p class="devis-total" data-testid="text-devis-amount-ttc">Total TTC: not available</p>')
     + (d.amountHt != null ? '<p class="devis-total" data-testid="text-devis-amount-ht"><strong>Amount HT (excluding VAT):</strong> ' + escapeHtml(d.amountHt) + ' €</p>' : '');
-  const pkg = data.packageAvailable
+  const sealed = data.sealedAt
+    ? '<p class="hint" data-testid="text-client-version-date">Version shared on ' + escapeHtml(new Date(data.sealedAt).toLocaleString("en-GB", { dateStyle: "long", timeStyle: "short", timeZone: "Europe/Paris" })) + '</p>'
+    : '';
+  const pkg = sealed + (data.packageAvailable
     ? '<div class="devis-actions"><a class="btn-download" href="' + PACKAGE_URL + '" target="_blank" rel="noopener" data-testid="link-download-package">Download the complete package (PDF)</a>'
       + '<span class="hint">English translation, contextual notes and value analysis, followed by the original French devis.</span></div>'
-    : '';
+    : '');
   const items = Array.isArray(data.lineItems) ? data.lineItems : [];
   const hasEn = items.some((li) => li.translationEn);
   const itemsBlock = items.length

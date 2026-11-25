@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { summarizeClientReleasesForProject } from "../services/client-quotation-release";
 import { emailProjectLink, projectLinkEmailPrefix } from "../services/project-link-email";
 import { z } from "zod";
 import { storage } from "../storage";
@@ -152,14 +153,15 @@ router.get(
       miss && Date.now() - miss.lastMissAt.getTime() <= ARCHIDOC_MISS_WARNING_WINDOW_MS
         ? { reason: miss.reason as "expired" | "rotate_required", lastMissAt: miss.lastMissAt.toISOString() }
         : null;
+    const clientCopies = await summarizeClientReleasesForProject(projectId);
     const latest = await storage.getLatestProjectShareToken(projectId);
-    if (!latest) return res.json({ token: null, publishedDevisIds: [], canCopyLink: false, archidocLookupMiss });
+    if (!latest) return res.json({ token: null, publishedDevisIds: [], canCopyLink: false, archidocLookupMiss, clientCopies });
     const active = latest.revokedAt ? null : latest;
     const publishedDevisIds = active ? await storage.listProjectShareDevisIds(active.id) : [];
     // Task #407 — copy availability flag only; the URL itself is NEVER in
     // this DTO (fetched on demand from the /link endpoint below).
     const canCopyLink = !!(active && !isTokenExpired(active) && active.encryptedShareUrl);
-    res.json({ token: tokenDto(latest), publishedDevisIds, canCopyLink, archidocLookupMiss });
+    res.json({ token: tokenDto(latest), publishedDevisIds, canCopyLink, archidocLookupMiss, clientCopies });
   },
 );
 
