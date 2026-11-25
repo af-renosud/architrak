@@ -214,6 +214,22 @@ describe("replacement carry-forward", () => {
     await db.update(devis).set({ signedPdfStorageKey: "/test/signed.pdf" }).where(eq(devis.id, f.target.id));
     expect((await getCarryForwardPreview(f.source.id, f.target.id)).blockedReason).toContain("signed");
   });
+  it("automatically keeps the structured code and takes the next number without a selection", async () => {
+    const f = await fixture();
+    await db.update(devis).set({ devisCode: "AQ.2.MIXED WORKS", lotRefText: "AQ", lotSequence: 2 }).where(eq(devis.id, f.source.id));
+    await replace(f);
+    const [target] = await db.select().from(devis).where(eq(devis.id, f.target.id));
+    expect(target).toMatchObject({ devisCode: "AQ.3.MIXED WORKS", lotRefText: "AQ", lotSequence: 3 });
+    expect(target.descriptionUk).toBeNull();
+  });
+  it("keeps a replacement's own structured code", async () => {
+    const f = await fixture();
+    await db.update(devis).set({ devisCode: "AR.1.OLD", lotRefText: "AR", lotSequence: 1 }).where(eq(devis.id, f.source.id));
+    await db.update(devis).set({ devisCode: "AR.5.CHOSEN", lotRefText: "AR", lotSequence: 5 }).where(eq(devis.id, f.target.id));
+    await replace(f);
+    const [target] = await db.select().from(devis).where(eq(devis.id, f.target.id));
+    expect(target).toMatchObject({ devisCode: "AR.5.CHOSEN", lotSequence: 5 });
+  });
   it("retains the structured name with a distinct sequence and independently copies selected plans", async () => {
     const f = await fixture();
     await db.update(devis).set({ devisCode: "PT.1.Ceiling finishes", lotRefText: "PT", lotSequence: 1 }).where(eq(devis.id, f.source.id));

@@ -56,8 +56,8 @@ interface RescrapeResult {
  * Conservative by design — refreshes ONLY the extraction-derived fields
  * (amounts, validation warnings, ai_extracted_data, ai_confidence,
  * date_sent if previously null, invoicing_mode if previously mode_a and
- * line items now appeared). Identity fields the user may have edited
- * (devisCode, devisNumber, descriptionFr, contractorId, projectId,
+ * line items now appeared, devis_number only when it was empty). Identity
+ * fields the user may have edited (devisCode, devisNumber, descriptionFr, contractorId, projectId,
  * lotId, marcheId, status, ref2, pvmvRef) are LEFT UNTOUCHED.
  *
  * Hard preconditions (any of these returns 409):
@@ -427,6 +427,10 @@ async function runRescrape(devisId: number, approval?: { attemptId: number; acto
         amountTtc,
         invoicingMode: nextInvoicingMode,
         dateSent: locked.dateSent || parsed.date || null,
+        // Fill-only: a quotation that arrived without its contractor number
+        // (e.g. parked intake) gains it from the reviewed extraction; an
+        // existing or architect-edited number is never overwritten.
+        devisNumber: locked.devisNumber?.trim() || parsed.devisNumber?.trim().slice(0, 255) || null,
         validationWarnings: allWarnings,
         aiExtractedData: parsed,
         aiConfidence: validation.confidenceScore,

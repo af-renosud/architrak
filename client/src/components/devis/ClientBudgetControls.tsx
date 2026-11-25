@@ -351,6 +351,7 @@ function ClientBudgetEditor({
             const entry = chosenEntry(candidate, row);
             return (
               <div key={candidate.devisId} className="space-y-1 break-words rounded-lg border p-3">
+                {candidate.internalCode && <p className="text-[11px] font-bold uppercase tracking-wide text-[#0B2545]">{candidate.internalCode}</p>}
                 <p className="font-semibold">{row.title.trim()}</p>
                 <p>{entry?.contractor || "No contractor"} · Ref: {entry?.reference || "—"}</p>
                 <Amounts ht={entry?.amountHt ?? null} ttc={entry?.amountTtc ?? null} />
@@ -382,7 +383,7 @@ function ClientBudgetEditor({
                 <div key={candidate.devisId} ref={candidate.devisId === focus?.devisId ? focusedRow : undefined} className={`space-y-2 rounded-lg border p-3 ${candidate.devisId === focus?.devisId ? "border-[#c1a27b] bg-[#c1a27b]/5" : ""}`}>
                   <label className="flex items-start gap-2 font-semibold">
                     <input type="checkbox" checked={row.included} disabled={disabled || (blocked && !row.included && !candidate.shared && !row.reviewedTotals)} onChange={(event) => update(candidate.devisId, { included: event.target.checked, refresh: event.target.checked && !candidate.shared ? true : row.refresh })} className="mt-0.5 h-4 w-4 shrink-0 accent-[#0B2545]" />
-                    <span className="min-w-0 break-words">{(candidate.shared ?? candidate.current)?.title || `Quotation ${candidate.devisId}`} <span className="font-normal text-muted-foreground">· {candidate.signed ? "Signed" : "Unsigned"}</span></span>
+                    <span className="min-w-0 break-words">{candidate.internalCode && <span className="block text-[11px] font-bold uppercase tracking-wide text-[#0B2545]" data-testid={`budget-internal-code-${candidate.devisId}`}>{candidate.internalCode}</span>}{(candidate.shared ?? candidate.current)?.title || `Quotation ${candidate.devisId}`} <span className="font-normal text-muted-foreground">· {candidate.signed ? "Signed" : "Unsigned"}</span></span>
                   </label>
                   <p className="break-words text-muted-foreground">{entry?.contractor || "No contractor"} · Ref: {entry?.reference || "—"}</p>
                   <Amounts ht={entry?.amountHt ?? null} ttc={entry?.amountTtc ?? null} />

@@ -190,6 +190,9 @@ const labels: Record<typeof carrySetupKeys[number], string> = {
   feePercentageOverride: "Fee percentage override — confirm applicability",
   invoicingMode: "Invoicing mode — confirm applicability", marcheId: "Contract association — confirm applicability",
 };
+function autoCodeRatchet(s: State) {
+  return s.sequence != null && !s.target.lotRefText;
+}
 function preview(s: State): CarryForwardPreview {
   const sourceHeader = textHeader(s.tr.find(t => t.devisId === s.source.id)?.headerTranslated);
   const targetHeader = textHeader(s.tr.find(t => t.devisId === s.target.id)?.headerTranslated);
@@ -197,7 +200,7 @@ function preview(s: State): CarryForwardPreview {
   return {
     sourceId: s.source.id, targetId: s.target.id, version: version(s), blockedReason: blocked(s),
     setup: carrySetupKeys.map(key => ({
-      key, label: labels[key], from: String(key === "devisCode" ? s.code : s.source[key] ?? ""),
+      key, label: key === "devisCode" && autoCodeRatchet(s) ? "Internal code / name — next number applied automatically" : labels[key], from: String(key === "devisCode" ? s.code : s.source[key] ?? ""),
       to: String(s.target[key] ?? ""), available: s.source[key] != null && s.source[key] !== ""
         && (key !== "devisCode" || !s.sequence || s.sequence <= 9999)
         && (!["marcheId", "feePercentageOverride", "invoicingMode"].includes(key) || (!s.committed && s.source.contractorId === s.target.contractorId)),
@@ -248,6 +251,11 @@ export async function applyCarryForward(tx: DbTransaction, source: Devis, target
   if (reason) throw new ReplacementError(409, "CARRY_FORWARD_BLOCKED", reason);
   const p = preview(s);
   if (automatic) {
+    // Replacing a structured code keeps its lot and name and takes the next
+    // number (MXT.2 → MXT.3) without operator input. A replacement that
+    // already has its own structured code keeps it.
+    if (autoCodeRatchet(s) && p.setup.find(f => f.key === "devisCode")?.available
+      && !selection.setup.includes("devisCode")) selection.setup.push("devisCode");
     for (const from of p.sourceLines) {
       const to = p.targetLines.find(row => row.id === from.suggestedTargetId);
       if (!to) continue;

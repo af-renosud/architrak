@@ -65,7 +65,7 @@ export function budgetState(record: BudgetRecord, rows: Source[], readOnly: bool
     const shared = saved?.basis === "reviewed_source_total" && quotationCommitmentStatus(d) !== "signed"
       && !retainedIndicative(d, saved) ? null : saved;
     return {
-      devisId: d.id, current, shared,
+      devisId: d.id, internalCode: d.devisCode?.trim() || null, current, shared,
       changed: !!shared && ["reference", "contractor", "amountHt", "amountTtc"].some(k =>
         shared[k as keyof ClientBudgetEntry] !== current[k as keyof ClientBudgetEntry]),
       signed: quotationCommitmentStatus(d) === "signed",

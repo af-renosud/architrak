@@ -11,6 +11,8 @@ export interface ClientBudgetEntry {
 }
 export interface ClientBudgetCandidate {
   devisId: number;
+  /** Architect-facing internal code (e.g. MXT.3.MIXED WORKS RENOVATION). Never part of a shared entry. */
+  internalCode?: string | null;
   current: ClientBudgetEntry | null;
   shared: ClientBudgetEntry | null;
   changed: boolean;
