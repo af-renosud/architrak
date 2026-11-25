@@ -88,3 +88,4 @@
 - [Grounded quotation context](grounded-quotation-context.md) — Gemini explanations add exact-product knowledge, preserve existing context, and remain part of ordinary quotation review.
 - [Jobs jotter](jobs-jotter.md) — database-persisted personal notes; closing never deletes, and concurrent edits must not silently overwrite.
 - [Client budget disclosure](client-budget-disclosure.md) — explicitly selected unsigned snapshots inform the budget without publishing full quotations or changing signed commitments.
+- [Autoscale background CPU](autoscale-background-cpu.md) — prod background rasterisation ~100x slower than dev; likely Autoscale CPU only during requests; don't add more fallbacks blindly.
