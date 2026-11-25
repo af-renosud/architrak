@@ -14,6 +14,7 @@ import { getDocumentBuffer, uploadDocument, deleteDocument } from "../storage/ob
 import { ReplacementError, replacementBlockedReason, REPLACEMENT_LOCK_NAMESPACE } from "./quotation-replacement.service";
 import { sourceMatchKey, uniqueSourceMatches, type SourceMatchItem } from "@shared/quotation-source-match";
 import { recoverNumberedTable } from "./quotation-numbered-table";
+import { compactWords } from "./quotation-coded-lot-table";
 
 type Connection = typeof db | DbTransaction;
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -29,13 +30,29 @@ const textHeader = (value: unknown) => {
     .filter(key => typeof h[key] === "string" && (h[key] as string).trim()).map(key => [key, h[key] as string]));
 };
 
-/** Line numbers are deliberately NOT an identity. Repeated descriptions are not auto-matched. */
+/** Line numbers are deliberately NOT an identity. Repeated descriptions are not auto-matched.
+ * First pass: identical source item (wording and figures). Second pass: the
+ * same printed wording (spacing, case, accents and punctuation ignored) that
+ * occurs exactly once on each side; its figures may have changed. */
 export function suggestCarryMatches(source: CarryLine[], target: CarryLine[]): CarryLine[] {
   const identity = (line: CarryLine) => line.sourceIdentity === undefined
     ? { description: line.description, quantity: line.quantity, unit: line.unit, unitPrice: line.unitPriceHt, total: line.totalHt }
     : line.sourceIdentity;
   const matches = uniqueSourceMatches(source, target, identity, identity);
-  return source.map(line => ({ ...line, suggestedTargetId: matches.get(line)?.id ?? null }));
+  const taken = new Set(Array.from(matches.values()).map(line => line.id));
+  const words = (line: CarryLine) => compactWords(line.description);
+  const count = (rows: CarryLine[], key: string) => rows.filter(row => words(row) === key).length;
+  return source.map(line => {
+    const exact = matches.get(line);
+    if (exact) return { ...line, suggestedTargetId: exact.id, matchKind: "exact" as const, figuresChanged: false };
+    const key = words(line);
+    const candidate = key.length >= 3 && count(source, key) === 1 && count(target, key) === 1
+      ? target.find(row => words(row) === key) : undefined;
+    if (!candidate || taken.has(candidate.id)) return { ...line, suggestedTargetId: null };
+    const figuresChanged = [[line.quantity, candidate.quantity], [line.unitPriceHt, candidate.unitPriceHt], [line.totalHt, candidate.totalHt]]
+      .some(([a, b]) => Number(a) !== Number(b)) || normalize(line.unit ?? "") !== normalize(candidate.unit ?? "");
+    return { ...line, suggestedTargetId: candidate.id, matchKind: "wording" as const, figuresChanged };
+  });
 }
 
 async function loadState(conn: Connection, sourceId: number, targetId: number, lock = false) {
@@ -240,7 +257,7 @@ export async function applyCarryForward(tx: DbTransaction, source: Devis, target
       const context = !!from.context && !to.context;
       const translation = !!(from.translation || from.explanation || from.explanationFr)
         && !(to.translation || to.explanation || to.explanationFr);
-      const wording = normalize(from.description) !== normalize(to.description) && !to.wordingChanged;
+      const wording = from.matchKind !== "wording" && normalize(from.description) !== normalize(to.description) && !to.wordingChanged;
       if (selected) Object.assign(selected, {
         context: selected.context || context, translation: selected.translation || translation,
         wording: selected.wording || wording,
@@ -258,7 +275,7 @@ export async function applyCarryForward(tx: DbTransaction, source: Devis, target
     const from = p.sourceLines.find(l => l.id === map.sourceLineId);
     const to = p.targetLines.find(l => l.id === map.targetLineId);
     if (!from || !to || (!map.context && !map.translation && !map.wording)) throw new ReplacementError(400, "INVALID_MAPPING", "Select existing lines and content to copy.");
-    if (map.wording && (from.suggestedTargetId !== to.id || to.wordingChanged))
+    if (map.wording && (from.suggestedTargetId !== to.id || to.wordingChanged || from.matchKind === "wording"))
       throw new ReplacementError(409, "WORDING_CONFLICT", "Working wording can only be retained on an unchanged, unedited replacement item.");
     if (map.translation && (p.sourceLines.filter(l => l.lineNumber === from.lineNumber).length !== 1
       || p.targetLines.filter(l => l.lineNumber === to.lineNumber).length !== 1)) {
@@ -356,6 +373,12 @@ export async function applyCarryForward(tx: DbTransaction, source: Devis, target
     devisId: target.id, actorId, operation: "correction",
     beforeSnapshot: { kind: "carry_forward", sourceDevisId: source.id, version: selection.version },
     afterSnapshot: { kind: "carry_forward", sourceDevisId: source.id, selection, reviewRequired: true,
+      matches: selection.lines.map(map => {
+        const from = p.sourceLines.find(row => row.id === map.sourceLineId);
+        return { sourceLineId: map.sourceLineId, targetLineId: map.targetLineId,
+          matchKind: from?.suggestedTargetId === map.targetLineId ? from.matchKind ?? null : "manual",
+          figuresChanged: from?.suggestedTargetId === map.targetLineId ? !!from.figuresChanged : null };
+      }),
       targetSourceKey: target.pdfStorageKey,
       targetSourceDigest: (target.aiExtractedData as any)?.pricedItemVerification?.sourceDigest
         ?? (target.aiExtractedData as any)?.quotationVerification?.sourceDigest ?? null,

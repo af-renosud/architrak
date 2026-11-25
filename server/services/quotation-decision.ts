@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { quotationIssue, quotationLifecycleIssues, type QuotationAction, type QuotationDecision, type QuotationIssue } from "@shared/quotation-decision";
 import { quotationFinancialIssues } from "@shared/quotation-financial-decision";
 import { getDocumentBuffer } from "../storage/object-storage";
-import { pricedEvidenceIssues, workingCoverageIssues } from "./quotation-source-evidence";
+import { pricedEvidenceIssues, printedVatIssues, workingCoverageIssues } from "./quotation-source-evidence";
 import type { ParsedDocument } from "../gmail/document-parser";
 import { quotationDecisionVersion, quotationPackageVersion, type QuotationDecisionSnapshot } from "./quotation-decision-snapshot";
 import { quotationSigningIssues } from "@shared/quotation-signing-decision";
@@ -80,6 +80,7 @@ export async function evaluateQuotationDecision(s: QuotationDecisionSnapshot, ac
     }
     if (parsed?.pricedItemVerification) {
       issues.push(...pricedEvidenceIssues(parsed, sourceLines));
+      issues.push(...printedVatIssues(parsed, s.lines, s.draft));
       if (parsed.nativeTableRecovery && (Math.round(Number(d.amountHt) * 100) !== Math.round(parsed.nativeTableRecovery.amountHt * 100)
         || Math.round(Number(d.amountTtc) * 100) !== Math.round(parsed.nativeTableRecovery.amountTtc * 100)))
         add("HEADER_TOTAL_MISMATCH", "Working header totals differ from the independently read original totals. Use Edit working quotation to reconcile the source.", "financial");

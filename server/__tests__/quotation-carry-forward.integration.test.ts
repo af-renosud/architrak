@@ -171,10 +171,12 @@ describe("replacement carry-forward", () => {
       originalDescription: line.description, translation: "Retained English wording", explanationFr: "Précision conservée",
     });
   });
-  it("does not auto-match changed prices, repeated rows or shifted unrelated rows", async () => {
+  it("matches same wording with changed prices as 'figures changed', but never repeated rows", async () => {
     const f = await fixture();
     await db.update(devisLineItems).set({ unitPriceHt: "40" }).where(eq(devisLineItems.id, f.newLine.id));
-    expect((await getCarryForwardPreview(f.source.id, f.target.id)).sourceLines[0].suggestedTargetId).toBeNull();
+    expect((await getCarryForwardPreview(f.source.id, f.target.id)).sourceLines[0]).toMatchObject({
+      suggestedTargetId: f.newLine.id, matchKind: "wording", figuresChanged: true,
+    });
     await db.update(devisLineItems).set({ unitPriceHt: "50" }).where(eq(devisLineItems.id, f.newLine.id));
     await db.insert(devisLineItems).values({ devisId: f.target.id, lineNumber: 6, description: "Paint ceiling", quantity: "2", unit: "m²", unitPriceHt: "50", totalHt: "100" });
     expect((await getCarryForwardPreview(f.source.id, f.target.id)).sourceLines[0].suggestedTargetId).toBeNull();

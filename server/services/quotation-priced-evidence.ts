@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ParsedDocument } from "../gmail/document-parser";
 import { readNumberedPrice } from "./quotation-numbered-table";
+import { CODED_LOT_TABLE_PARSER, codedLotRowProblem } from "./quotation-coded-lot-table";
 
 export const PRICED_EVIDENCE_PARSER = "priced-source-v1";
 export interface PricedEvidence {
@@ -21,6 +22,19 @@ export function collectPricedEvidence(parsed: ParsedDocument, pdf: Buffer): Pric
   const rows = parsed.lineItems ?? [];
   const sourceDigest = createHash("sha256").update(pdf).digest("hex");
   const native = parsed.nativeTableRecovery;
+  if (native?.parser === CODED_LOT_TABLE_PARSER) {
+    // Name exactly the rows that fail to pair; matching rows need no review.
+    const fresh = native.sourceDigest === sourceDigest;
+    const issues = !fresh ? rows.map((row, i) => ({ line: i + 1, page: row.pageHint, reason: "The original PDF changed since it was read." }))
+      : rows.length !== native.evidence.length
+        ? [{ line: 1, reason: `The PDF lists ${native.evidence.length} priced items but ${rows.length} were extracted. Review the items against the original PDF.` }]
+        : native.evidence.flatMap((entry, i) => {
+          const problem = codedLotRowProblem(entry as any, rows[i])
+            ?? (rows[i].vatRate !== entry.vatRate ? "The printed VAT rate was not applied to this item." : null);
+          return problem ? [{ line: i + 1, page: entry.pages[0], reason: problem }] : [];
+        });
+    return { parser: PRICED_EVIDENCE_PARSER, sourceDigest, rowsDigest: pricedRowsDigest(rows), issues };
+  }
   const supported = native?.sourceDigest === sourceDigest
     && native.evidence.length === rows.length
     && native.evidence.every((entry, i) => {

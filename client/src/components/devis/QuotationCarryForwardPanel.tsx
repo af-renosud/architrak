@@ -57,7 +57,7 @@ export function QuotationCarryForwardPanel({ preview, selection, onChange, readO
         return <article key={source.id} className="space-y-3 rounded-md border bg-muted/20 p-3" data-testid={`carry-automatic-line-${source.id}`}>
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h4 className="font-semibold">Original line {source.lineNumber} → Replacement line {target.lineNumber}</h4>
-            <span className="text-xs font-medium text-muted-foreground">Unchanged source item</span>
+            <span className="text-xs font-medium text-muted-foreground">{source.figuresChanged ? `Same wording · figures changed (was ${source.totalHt} HT, now ${target.totalHt} HT)` : source.matchKind === "wording" ? "Same wording" : "Unchanged source item"}</span>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             <div className="min-w-0 space-y-2">

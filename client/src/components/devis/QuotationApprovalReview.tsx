@@ -5,11 +5,39 @@ import { apiRequest } from "@/lib/queryClient";
 import { quotationWorkBlocked, useQuotationWork } from "./quotation-review-state";
 import { SourceTotalHelp } from "./SourceTotalHelp";
 import type { QuotationIssue } from "@shared/quotation-decision";
+import type { ReplacementReviewSummary, ReplacementSummaryLine } from "@shared/quotation-carry-forward";
 
 export type TranslationReadinessBlocker = Pick<QuotationIssue, "key" | "message"> & Partial<Omit<QuotationIssue, "key" | "message">>;
 export interface TranslationReadiness {
   version: string; status: string; blockers: TranslationReadinessBlocker[];
   sendingPrerequisites?: QuotationIssue[];
+  replacement?: ReplacementReviewSummary | null;
+}
+const firstLine = (text: string) => text.split("\n")[0].trim();
+/** Replacement guidance: only new and changed items need attention; unchanged items are collapsed. */
+export function ReplacementReviewPanel({ summary, onLocate }: {
+  summary: ReplacementReviewSummary; onLocate: (key: string, target?: QuotationIssue["target"]) => void;
+}) {
+  const item = (line: ReplacementSummaryLine, note?: string) => <li key={line.id}>
+    <button type="button" className="text-left underline underline-offset-4"
+      onClick={() => onLocate(`line-${line.id}`, { section: "translation", rowId: line.id, field: "descriptionEn" })}>
+      Item {line.lineNumber} · {firstLine(line.description)}</button>{note && <span className="text-muted-foreground"> · {note}</span>}</li>;
+  const attention = summary.figuresChanged.length + summary.added.length;
+  return <section className="space-y-2 rounded-md border p-3 text-xs" aria-label="Replacement summary" data-testid="replacement-review-summary">
+    <h4 className="font-semibold">Replaces {summary.previousLabel}</h4>
+    <p>{summary.unchanged.length} carried over unchanged · {summary.figuresChanged.length} figures changed · {summary.added.length} new · {summary.removed.length} removed</p>
+    <p className="text-muted-foreground">Translations, context and images were carried over for matching items. {attention
+      ? "Check the items below: their translation or figures are new for this version."
+      : "No item needs a fresh check beyond the totals."}</p>
+    {!!summary.figuresChanged.length && <div><p className="font-semibold">Figures changed · wording carried over</p>
+      <ul className="space-y-1">{summary.figuresChanged.map(line => item(line, `was ${line.previousTotalHt} HT, now ${line.totalHt} HT`))}</ul></div>}
+    {!!summary.added.length && <div><p className="font-semibold">New items · check the English wording</p>
+      <ul className="space-y-1">{summary.added.map(line => item(line))}</ul></div>}
+    {!!summary.unchanged.length && <details><summary className="cursor-pointer">Carried over unchanged · {summary.unchanged.length}</summary>
+      <ul className="mt-1 space-y-1">{summary.unchanged.map(line => item(line))}</ul></details>}
+    {!!summary.removed.length && <details><summary className="cursor-pointer">Removed from the previous version · {summary.removed.length}</summary>
+      <ul className="mt-1 space-y-1">{summary.removed.map(line => <li key={line.id}>Item {line.lineNumber} · {firstLine(line.description)}</li>)}</ul></details>}
+  </section>;
 }
 export function QuotationApprovalReview({ devisId, onLocate, disabled = false, onRefreshWorking, onCloseEditor, onReadiness }: {
   devisId: number; onLocate: (key: string, target?: QuotationIssue["target"]) => void; disabled?: boolean;
@@ -89,6 +117,7 @@ export function QuotationApprovalReview({ devisId, onLocate, disabled = false, o
     {work.blocked && <p className="text-xs">You can close this editor without discarding context. Resolve any failed save or conflicting edit in the affected context box; approval stays protected until it is saved.</p>}
     {readiness.isError && <div role="alert" className="text-xs">Checklist could not be loaded. Approval is unavailable. <Button size="sm" variant="outline" onClick={() => void readiness.refetch()}>Retry checklist</Button></div>}
     {syncError && <div role="alert" className="text-xs">{syncError} <Button type="button" size="sm" variant="outline" onClick={() => setSyncEpoch(value => value + 1)}>Retry working quotation</Button></div>}
+    {!work.blocked && readiness.data?.replacement && <ReplacementReviewPanel summary={readiness.data.replacement} onLocate={onLocate} />}
     {!work.blocked && readiness.data && ([
       { id: "source", title: "Source & figures", matches: (issue: TranslationReadinessBlocker) =>
         issue.target?.section === "source" || issue.target?.section === "financial" || !!issue.code?.startsWith("SOURCE_") },

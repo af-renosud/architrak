@@ -64,14 +64,19 @@ export function draftFrom(s: Pick<State, "quotation" | "lines" | "translation" |
     explanationFr: metadata?.explanationFr ?? header.descriptionExplanationFr ?? "",
     explanationEn: header.descriptionExplanation ?? "", summaryEn: header.summary ?? "",
     discountHt: metadata?.discountHt ?? "0.00", vatRounding: metadata?.vatRounding ?? "bucket",
-    lines: s.lines.map(row => {
+    lines: s.lines.map((row, index) => {
       const saved = byId.get(row.id), t = translations.get(row.line_number);
+      // A rate printed on this exact source row (verified native table) beats any document-level rate.
+      const printed = Array.isArray(evidence?.lineItems) && evidence.lineItems.length === s.lines.length
+        ? evidence.lineItems[index] : undefined;
+      const printedRate = typeof printed?.vatRate === "string" && printed.total != null
+        && Math.round(Number(printed.total) * 100) === Math.round(Number(row.total_ht) * 100) ? printed.vatRate : undefined;
       return { id: row.id, clientKey: saved?.clientKey ?? lineKey(row.id), kind: saved?.kind ?? "priced",
         descriptionFr: quotationParagraph(row.description), descriptionEn: quotationParagraph(t?.translation),
         explanationFr: saved?.explanationFr ?? t?.explanationFr ?? "", explanationEn: t?.explanation ?? "",
         quantity: String(row.quantity ?? (saved?.kind === "context" ? "0" : "")), unit: row.unit ?? "",
         unitPriceHt: String(row.unit_price_ht ?? ""), totalHt: String(row.total_ht),
-        vatRate: saved?.vatRate ?? explicitRate, included: saved?.included ?? true };
+        vatRate: saved?.vatRate ?? printedRate ?? explicitRate, included: saved?.included ?? true };
     }),
   };
 }

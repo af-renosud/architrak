@@ -32,6 +32,10 @@ export interface CarryLine {
   suggestedTargetId: number | null;
   sourceIdentity?: import("./quotation-source-match").SourceMatchItem | null;
   wordingChanged?: boolean;
+  /** Source lines only: "exact" = identical item; "wording" = same printed wording, matched uniquely. */
+  matchKind?: "exact" | "wording";
+  /** Source lines matched by wording whose quantity, unit or prices differ in the replacement. */
+  figuresChanged?: boolean;
 }
 export interface CarryForwardPreview {
   version: string;
@@ -43,4 +47,12 @@ export interface CarryForwardPreview {
   targetLines: CarryLine[];
   header: { source: string; target: string; available: boolean };
   supportingPdfs: { id: number; label: string; fileName: string; alreadyPresent: boolean }[];
+}
+
+export interface ReplacementSummaryLine { id: number; lineNumber: number; description: string; totalHt: string; previousTotalHt?: string }
+/** What changed between a replaced quotation and its replacement, by source item. */
+export interface ReplacementReviewSummary {
+  previousId: number; previousLabel: string;
+  unchanged: ReplacementSummaryLine[]; figuresChanged: ReplacementSummaryLine[];
+  added: ReplacementSummaryLine[]; removed: ReplacementSummaryLine[];
 }

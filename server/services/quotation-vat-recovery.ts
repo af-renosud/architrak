@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { PDFDocument } from "pdf-lib";
 import { recoverPosteTable } from "./quotation-poste-table";
+import { codedLotDescriptionMatches, recoverCodedLotTable } from "./quotation-coded-lot-table";
 import { correctionCents, previewCorrectionTotals, type ArchitectCorrectionSnapshot } from "../../shared/architect-quotation";
 
 const identity = (text: string) => {
@@ -15,18 +16,20 @@ const identity = (text: string) => {
 };
 /** Suggestions only: never writes money, descriptions, or approval state. */
 export function recoverSourceVat(pages: string[], snapshot: ArchitectCorrectionSnapshot) {
-  const source = recoverPosteTable(pages);
+  const poste = recoverPosteTable(pages);
+  const coded = poste ? null : recoverCodedLotTable(pages);
+  const source = poste ?? coded;
   if (!source || !snapshot.baseline) throw new Error("The PDF table could not be verified. Review the missing rates beside the original PDF.");
   const lines = snapshot.draft.lines.filter(row => row.kind === "priced" && row.included);
   if (lines.length !== source.rows.length) throw new Error("Source and working items differ. VAT recovery needs manual review.");
   const used = new Set<number>();
   const rates = lines.map(line => {
-    const matches = source.rows.map((row, index) => ({ row, index })).filter(({ row }) =>
-      identity(row.description) === identity(line.descriptionFr)
+    const matches = source.rows.map((row, index) => ({ row, index })).filter(({ row, index }) =>
+      (coded ? codedLotDescriptionMatches(coded.evidence[index], line.descriptionFr) : identity(row.description) === identity(line.descriptionFr))
       && correctionCents(String(row.total)) === correctionCents(line.totalHt));
     if (matches.length !== 1 || used.has(matches[0].index)) throw new Error("An item cannot be uniquely matched to the PDF. No rates were applied.");
     const { index } = matches[0]; used.add(index);
-    const raw = source.evidence[index].priceText.match(/(\d+[,.]\d+)\s*$/)?.[1];
+    const raw = coded ? coded.evidence[index].vatRate : source.evidence[index].priceText.match(/(\d+[,.]\d+)\s*$/)?.[1];
     if (!raw) throw new Error("The printed VAT rate could not be read.");
     const vatRate = raw.replace(",", ".");
     if (line.vatRate && Number(line.vatRate) !== Number(vatRate)) throw new Error("An existing VAT rate differs from the PDF. Review it manually.");

@@ -22,6 +22,7 @@ import { safeErrorDiagnostic } from "../safe-error";
 import { emailHasFinancialAdmission } from "@shared/email-financial-gate";
 import { recoverPosteTable } from "../services/quotation-poste-table";
 import { recoverNumberedTable } from "../services/quotation-numbered-table";
+import { alignCodedLotRows, recoverCodedLotTable } from "../services/quotation-coded-lot-table";
 import { collectPricedEvidence, type PricedEvidence } from "../services/quotation-priced-evidence";
 import {
   countItemRowCandidates,
@@ -71,13 +72,15 @@ export interface ParsedDocument {
   nativeTableRecovery?: {
     /** Unexamined header metadata must not overwrite previously extracted evidence. */
     metadataScope?: "table_only";
-    parser: "poste-table-v1" | "numbered-table-v2" | "numbered-table-v3";
+    parser: "poste-table-v1" | "numbered-table-v2" | "numbered-table-v3" | "coded-lot-table-v1";
     documentNotes?: string[];
     sourceDigest: string;
     initialLineItems: ParsedDocument["lineItems"];
-    evidence: Array<{ pages: number[]; priceText: string; sourceText: string }>;
+    evidence: Array<{ pages: number[]; priceText: string; sourceText: string; heading?: string; code?: string | null; vatRate?: string }>;
     amountHt: number;
     amountTtc: number;
+    /** Printed VAT summary (rate / base HT / VAT), reconciled to the cent with the rows. */
+    vatSummary?: Array<{ rate: string; baseHt: number; vat: number }>;
   };
   quotationVerification?: {
     manifest?: QuotationSourceManifest;
@@ -238,6 +241,9 @@ export interface ParsedDocument {
      *  coerced/validated downstream (Task #113). Powers the per-line
      *  highlight rectangle in the contractor portal pdf.js viewer. */
     bbox?: { x: number; y: number; w: number; h: number };
+    /** Printed per-line VAT rate (e.g. "5.5"). Only set from verified native
+     *  table evidence, never from model output. */
+    vatRate?: string;
   }>;
   rawText?: string;
   // Task #350 — extraction completeness metadata, stamped by parseDocument
@@ -2985,6 +2991,26 @@ async function parseDocumentWithinBudget(
     // This runs only on fresh parser output, never persisted working rows.
     if (parsed.documentType === "quotation") {
       const native = numberedRecovery ?? recoverPosteTable(pageTexts);
+      const coded = !native && pageTexts.length === images.length && pdfPageCount === images.length
+        ? recoverCodedLotTable(pageTexts) : null;
+      if (coded) {
+        // Model descriptions stay (the printed headings are letter-spaced);
+        // money and VAT come from the PDF text only when every row pairs.
+        parsed.nativeTableRecovery = {
+          parser: "coded-lot-table-v1",
+          sourceDigest: quotationHash("sha256").update(pdfBuffer).digest("hex"),
+          initialLineItems: structuredClone(parsed.lineItems),
+          evidence: coded.evidence, amountHt: coded.amountHt, amountTtc: coded.amountTtc, vatSummary: coded.vatSummary,
+        };
+        const aligned = alignCodedLotRows(parsed.lineItems ?? [], coded);
+        if (aligned) parsed.lineItems = aligned;
+        parsed.amountHt = coded.amountHt;
+        parsed.amountTtc = coded.amountTtc;
+        parsed.tvaAmount = coded.tvaAmount;
+        // Several printed rates: never let one document-level rate seed every line.
+        if (coded.vatSummary.length === 1) parsed.tvaRate = Number(coded.vatSummary[0].rate);
+        else delete parsed.tvaRate;
+      }
       if (native && pageTexts.length === images.length && pdfPageCount === images.length) {
         parsed.nativeTableRecovery = {
           parser: numberedRecovery ? "numbered-table-v3" : "poste-table-v1",
