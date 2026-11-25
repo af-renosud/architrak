@@ -1462,6 +1462,7 @@ function DevisRow({ d, projectId, contractors, lots, isArchived, expanded, openC
           devisId={d.id}
           devisCode={d.devisCode}
           hasOriginal={hasPdf}
+          preferOriginal={isReplaced}
           onClose={() => setPdfPopoutOpen(false)}
         />
       )}

@@ -90,3 +90,4 @@
 - [Client budget disclosure](client-budget-disclosure.md) — explicitly selected unsigned snapshots inform the budget without publishing full quotations or changing signed commitments.
 - [Autoscale background CPU](autoscale-background-cpu.md) — prod background rasterisation ~100x slower than dev; likely Autoscale CPU only during requests; don't add more fallbacks blindly.
 - [Replacement carry by wording](replacement-wording-carry.md) — unique compacted-wording matches carry work as "figures changed"; repeated wording never matches; coded-lot VAT exact match = checked.
+- [Client publication is live](client-publication-snapshots.md) — portal publish stores only a version hash; no frozen copy of what the client saw exists; original PDF is the only immutable record.

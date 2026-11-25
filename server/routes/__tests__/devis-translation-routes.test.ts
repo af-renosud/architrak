@@ -169,6 +169,15 @@ describe("GET /api/devis/:id/pdf?variant=...", () => {
     expect(getDocumentStreamMock).not.toHaveBeenCalledWith("k/stale-combined.pdf");
   });
 
+  it("answers a HEAD availability probe without generating the combined PDF", async () => {
+    getDevis.mockResolvedValue({ id: 3, devisCode: "D-3", pdfStorageKey: "k/orig" });
+    getDevisTranslation.mockResolvedValue({ status: "edited", translatedPdfStorageKey: null, combinedPdfStorageKey: null });
+    generateCombinedPdfMock.mockClear();
+    const res = await fetch(`${baseUrl}/api/devis/3/pdf?variant=combined`, { method: "HEAD" });
+    expect(res.status).toBe(200);
+    expect(generateCombinedPdfMock).not.toHaveBeenCalled();
+  });
+
   it("regenerates and streams the combined PDF when variant=combined", async () => {
     getDevis.mockResolvedValue({ id: 3, devisCode: "D-3", pdfStorageKey: "k/orig" });
     getDevisTranslation.mockResolvedValue({

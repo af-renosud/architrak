@@ -433,6 +433,9 @@ router.get(
         if (!t || !ready) {
           return res.status(409).json({ message: "Translation not ready", status: t?.status ?? "missing" });
         }
+        // The viewer probes availability with HEAD; never render a whole
+        // PDF (tens of seconds in production) just to answer a probe.
+        if (req.method === "HEAD") return res.status(200).type("application/pdf").end();
         // Fingerprint-validated cache read: a per-line context save racing
         // this request must force regeneration, never serve the stale PDF.
         const cachedTranslated = includeExplanations
@@ -451,6 +454,7 @@ router.get(
         if (!t || !ready) {
           return res.status(409).json({ message: "Translation not ready", status: t?.status ?? "missing" });
         }
+        if (req.method === "HEAD") return res.status(200).type("application/pdf").end();
         const cachedCombined = includeExplanations
           ? null
           : await getValidatedCachedPdfKey(devisId, "combined");

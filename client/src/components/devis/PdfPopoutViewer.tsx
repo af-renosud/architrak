@@ -44,6 +44,9 @@ interface PdfPopoutViewerProps {
   downloadName?: string;
   /** Show the original-document choice for standalone contractor invoices. */
   originalDocument?: boolean;
+  /** Open on the contractor's original PDF (e.g. replaced quotations, whose
+   * authoritative record is the unchanged source document). */
+  preferOriginal?: boolean;
   /** Stable ID used for the window's test IDs when no devis ID exists. */
   viewerId?: string;
   /** Gives non-quotation documents their own persisted window and visual identity. */
@@ -152,6 +155,7 @@ function PdfPopoutViewerWindow({
   downloadUrl,
   downloadName,
   originalDocument = false,
+  preferOriginal = false,
   viewerId,
   viewerKind = "source-pdf",
   onClose,
@@ -182,7 +186,8 @@ function PdfPopoutViewerWindow({
   }
 
   const defaultVariant: PdfVariant =
-    translationReady && hasOriginal
+    preferOriginal && hasOriginal ? "original"
+    : translationReady && hasOriginal
       ? "combined"
       : availableVariants[0] ?? "original";
 
@@ -195,8 +200,8 @@ function PdfPopoutViewerWindow({
   useEffect(() => {
     if (userPickedRef.current) return;
     if (availableVariants.length === 0) return;
-    const want: PdfVariant =
-      translationReady && hasOriginal ? "combined" : availableVariants[0];
+    const want: PdfVariant = preferOriginal && hasOriginal ? "original"
+      : translationReady && hasOriginal ? "combined" : availableVariants[0];
     if (want !== variant) setVariant(want);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [translationReady, hasOriginal]);
