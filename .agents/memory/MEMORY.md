@@ -21,7 +21,7 @@
 - [Intake PDF rasterisation](intake-pdf-rasterisation.md) — a conversion failure masquerades as classification="unknown"; rasterise via a pdftoppm→pdftocairo→ghostscript fallback chain (gs is a nix dep), throw with per-strategy stderr on total failure.
 - [Prod one-shot actions](prod-side-actions-via-data-migrations.md) — when you can't publish or click in prod, a tightly-guarded data-only migration fires the action exactly once at first boot after the user publishes.
 - [Playwright run quirks](playwright-run-quirks.md) — run e2e specs in ONE shell call with `timeout -k` + file redirect; detached runs get killed between calls; hermetic specs must set the dev-login flag.
-- [Hand-written migrations checklist](hand-written-migrations.md) — every new migration needs SQL + manual journal entry + MIGRATION_ARTIFACTS entry, or boot and replay tests hard-fail.
+- [Hand-written migrations checklist](hand-written-migrations.md) — every new migration needs SQL + journal entry + MIGRATION_ARTIFACTS entry + meta snapshot, or boot/publish hard-fail.
 - [PDF cache race guard](pdf-cache-race-guard.md) — never fingerprint-check-then-write cache keys; edits bump a version atomically with clearing keys, publish via version-guarded conditional UPDATE.
 - [Prince CSS limits](prince-css-limits.md) — DocRaptor/Prince ignores display:grid (renders stacked); flexbox/tables fine; check PDF links via qpdf --qdf, raw grep misses them.
 - [Stale cache eats remounted edits](stale-cache-remount-edits.md) — staleTime Infinity: autosave must invalidate its query on success and re-sync non-prop-driven editors, or remounts show stale content.
@@ -93,3 +93,4 @@
 - [Client sees sealed releases](client-publication-snapshots.md) — public quotation surfaces serve only immutable sealed copies; edits reach clients only via explicit "update copy".
 - [Client worksheet parity](client-worksheet-excel.md) — screen, API and Excel download must agree to the cent; change compute and formulas together.
 - [Quotation points to check](quotation-points-to-check.md) — rule points computed on read, keyed by lines+figures; reviews append-only; API is /points-to-check (/checks is taken).
+- [Lot subtotal check](lot-subtotal-check.md) — AI-read quotations: model reports printed subtotals + line sections; server resolves/compares; decoder strips unknown model fields.

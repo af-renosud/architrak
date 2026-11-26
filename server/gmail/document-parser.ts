@@ -29,6 +29,7 @@ import {
   mergeContinuationFragments,
   MIN_CANDIDATE_ROWS_FOR_EVIDENCE,
 } from "../services/extraction-completeness";
+import { resolvePrintedSubtotals, type PrintedSubtotal, type RawSectionSubtotal } from "../services/quotation-section-subtotals";
 
 const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -244,7 +245,16 @@ export interface ParsedDocument {
     /** Printed per-line VAT rate (e.g. "5.5"). Only set from verified native
      *  table evidence, never from model output. */
     vatRate?: string;
+    /** Model-read heading of the innermost printed section/lot this line is
+     *  under. Used only to match lines to printed section subtotals. */
+    section?: string;
+    /** Stored line number, when validating persisted rows. */
+    lineNumber?: number;
   }>;
+  /** Raw model output: printed section subtotals, never line items. */
+  sectionSubtotals?: RawSectionSubtotal[];
+  /** Deterministic: printed subtotals resolved to the lines they cover. */
+  printedSubtotals?: PrintedSubtotal[];
   rawText?: string;
   // Task #350 — extraction completeness metadata, stamped by parseDocument
   // (deterministic, not AI-produced) and persisted with aiExtractedData so
@@ -400,7 +410,8 @@ const USER_PROMPT = `Analyze this French construction document and extract the f
 - paymentTerms: payment conditions text if visible (e.g., "30 jours fin de mois")
 - lotReferences: array of lot codes/references visible on the document (e.g., ["Lot 1", "Lot 7 - Electricite"])
 - description: brief description of the work/service
-- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, percentComplete, pageHint, bbox}. For SITUATION documents (situation de travaux), set percentComplete to the CUMULATIVE claimed completion percentage printed for the line (columns like "% avancement", "% réalisé", "Avancement cumulé"); omit percentComplete for all other document types. IMPORTANT: unitPrice and total must be the pre-tax (HT / hors taxes) amounts for each line — French quotations list line amounts HT in the body and only add TVA at the bottom, where the final total is TTC (tax-inclusive). Never copy TTC/tax-inclusive figures into line items. Multi-paragraph descriptions belong to ONE item: only create a new array entry when the document shows a new priced row — a paragraph without its own price is part of the previous item's description, never a new entry. On quotations/devis, preserve every separately priced main-table row, including optional and alternative proposals; never omit one merely because it is absent from a retained-options summary. Also include separately priced options printed only in a summary/totals box when the document explicitly labels them as retained/included in the Montant H.T. Omit quantity/unit/unitPrice when they are not printed, and do not include subtotals, TVA, delivery charges, or TTC.
+- lineItems: array of line items, each with {description, quantity, unit, unitPrice, total, percentComplete, pageHint, bbox}. For SITUATION documents (situation de travaux), set percentComplete to the CUMULATIVE claimed completion percentage printed for the line (columns like "% avancement", "% réalisé", "Avancement cumulé"); omit percentComplete for all other document types. IMPORTANT: unitPrice and total must be the pre-tax (HT / hors taxes) amounts for each line — French quotations list line amounts HT in the body and only add TVA at the bottom, where the final total is TTC (tax-inclusive). Never copy TTC/tax-inclusive figures into line items. Multi-paragraph descriptions belong to ONE item: only create a new array entry when the document shows a new priced row — a paragraph without its own price is part of the previous item's description, never a new entry. On quotations/devis, preserve every separately priced main-table row, including optional and alternative proposals; never omit one merely because it is absent from a retained-options summary. Also include separately priced options printed only in a summary/totals box when the document explicitly labels them as retained/included in the Montant H.T. Omit quantity/unit/unitPrice when they are not printed, and do not include subtotals, TVA, delivery charges, or TTC. On quotations whose items are grouped under printed section or lot headings, set "section" on each line item to the verbatim heading of the innermost section it is printed under (for example "LOT 2 - PLOMBERIE" or "2.1 Alimentation"); omit section when the line is not under a heading.
+- sectionSubtotals: quotations only — array of the section/lot subtotal rows printed INSIDE the item table ("Sous-total", "Total lot", "S/Total"), each {section, parentSection, amount, page}: section is the verbatim heading of the section the subtotal closes (the same text used in the lines' "section"); parentSection is the verbatim heading of the enclosing section when sections are nested, otherwise omit it; amount is the printed HT subtotal; page is the 1-indexed page within the supplied images. Copy the printed amount exactly — never compute it. Never put these rows in lineItems. Do not include the grand total, TVA, TTC, or rows of a separate recapitulation/summary table. Omit the array when no section subtotals are printed.
 - iban: contractor IBAN printed on the document if visible (typically in a "Coordonnées bancaires" / RIB block). Copy verbatim — preserve all characters including spaces; downstream code normalises and validates.
 - bic: contractor BIC / SWIFT code printed on the document if visible. Copy verbatim.
 
@@ -629,6 +640,21 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
       description: "Contractor BIC / SWIFT code printed on the document. Copy verbatim.",
       nullable: true,
     },
+    sectionSubtotals: {
+      type: SchemaType.ARRAY,
+      description: "Quotations: section/lot subtotal rows printed inside the item table (Sous-total, Total lot). Never line items; exclude the grand total, TVA, TTC and separate recap tables.",
+      nullable: true,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          section: { type: SchemaType.STRING, description: "Verbatim heading of the section this subtotal closes (same text as the lines' section)" },
+          parentSection: { type: SchemaType.STRING, description: "Verbatim heading of the enclosing section when nested", nullable: true },
+          amount: { type: SchemaType.NUMBER, description: "Printed HT subtotal amount, copied exactly" },
+          page: { type: SchemaType.NUMBER, description: "1-indexed page within the supplied images", nullable: true },
+        },
+        required: ["section", "amount"],
+      },
+    },
     lineItems: {
       type: SchemaType.ARRAY,
       description: "Array of line items extracted from the document",
@@ -663,6 +689,11 @@ const EXTRACTION_SCHEMA: ResponseSchema = {
           percentComplete: {
             type: SchemaType.NUMBER,
             description: "For situation documents only: the CUMULATIVE percentage of completion claimed for this line (0-100), as printed (e.g. '% avancement', '% réalisé'). Omit for non-situation documents or when not printed.",
+            nullable: true,
+          },
+          section: {
+            type: SchemaType.STRING,
+            description: "Quotations: verbatim heading of the innermost printed section/lot this line is under. Omit when not under a heading.",
             nullable: true,
           },
           pageHint: {
@@ -2535,6 +2566,22 @@ export function mergeChunkedParses(
   }
   if (lineItems.length > 0) merged.lineItems = lineItems;
 
+  // Printed section subtotals: concatenated in chunk order with pages rebased
+  // like line items. Identical repeats are collapsed later when resolved.
+  const sectionSubtotals: RawSectionSubtotal[] = [];
+  for (const { parsed, pageOffset, pageCount } of chunks) {
+    for (const row of Array.isArray(parsed.sectionSubtotals) ? parsed.sectionSubtotals : []) {
+      if (!row || typeof row !== "object") continue;
+      const rebased = { ...row };
+      if (pageCount === 1) rebased.page = pageOffset + 1;
+      else if (typeof row.page === "number" && Number.isInteger(row.page) && row.page >= 1 && row.page <= pageCount) {
+        rebased.page = row.page + pageOffset;
+      } else delete rebased.page;
+      sectionSubtotals.push(rebased);
+    }
+  }
+  if (sectionSubtotals.length > 0) merged.sectionSubtotals = sectionSubtotals;
+
   const rawTexts = chunks.map((c) => c.parsed.rawText).filter(Boolean);
   if (rawTexts.length > 0) merged.rawText = rawTexts.join("\n");
 
@@ -3033,6 +3080,14 @@ async function parseDocumentWithinBudget(
           }));
         }
       }
+    }
+    // Lot-by-lot evidence for AI-read quotations: bind each printed section
+    // subtotal to the final lines it covers. Exact table readers reconcile
+    // their own sections, so they never get this check.
+    delete parsed.printedSubtotals;
+    if (parsed.documentType === "quotation" && !parsed.nativeTableRecovery) {
+      const printed = resolvePrintedSubtotals(parsed.lineItems, parsed.sectionSubtotals);
+      if (printed) parsed.printedSubtotals = printed;
     }
     // Task #350 — stamp deterministic coverage metadata (persisted via
     // aiExtractedData) so completeness validation is auditable downstream.

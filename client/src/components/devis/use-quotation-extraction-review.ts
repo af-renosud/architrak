@@ -32,8 +32,19 @@ export interface ExtractionReviewEvent {
   effort_minutes: number | null;
   diagnostic?: { code: string; stage: string; chunk?: number; message: string } | null;
 }
+/** Printed lot subtotal compared with the sum of its extracted lines. */
+export interface LotSubtotalComparison {
+  label: string;
+  page: number | null;
+  printed: number;
+  extracted: number | null;
+  difference: number | null;
+  lineNumbers: number[];
+  status: "matches" | "differs" | "unmatched";
+}
 export interface ExtractionReviewResponse {
   exceptionReview?: QuotationExceptionReview;
+  lotSubtotals?: LotSubtotalComparison[];
   humanWorkingVersion?: boolean;
   running?: boolean;
   job?: { state: string; message?: string | null } | null;

@@ -63,6 +63,32 @@ it("labels the actual comparison response as OCR versus independently collected 
     .toHaveAttribute("href", "/api/devis/42/pdf?variant=original");
 });
 
+it("shows each printed lot subtotal against its extracted lines, naming the differing lots", async () => {
+  fetchMock.mockImplementation((url: string) => Promise.resolve(response(url.startsWith("/api/extraction-review/summary")
+    ? summary : { ...data, evidence: {}, lotSubtotals: [
+      { label: "LOT 1 - MAÇONNERIE", page: 1, printed: 1500, extracted: 1600, difference: 100, lineNumbers: [1, 2], status: "differs" },
+      { label: "LOT 2 - PLOMBERIE", page: 2, printed: 2000, extracted: 1900, difference: -100, lineNumbers: [3, 4], status: "differs" },
+      { label: "LOT 3 - PEINTURE", page: 2, printed: 400, extracted: 400, difference: 0, lineNumbers: [5], status: "matches" },
+    ] })));
+  mount(); await ready();
+  const check = screen.getByTestId("lot-subtotal-check");
+  expect(within(check).getByText(/Lot subtotals · 3 printed · 2 differ/)).toBeVisible();
+  const lot1 = screen.getByTestId("lot-subtotal-row-0");
+  expect(lot1).toHaveTextContent("LOT 1 - MAÇONNERIE");
+  expect(lot1).toHaveTextContent("+100,00");
+  expect(lot1).toHaveTextContent("1–2");
+  expect(within(lot1).getByRole("link", { name: "page 1" })).toHaveAttribute("href", "/api/devis/42/pdf?variant=original#page=1");
+  expect(screen.getByTestId("lot-subtotal-row-1")).toHaveTextContent("−100,00");
+  expect(screen.getByTestId("lot-subtotal-row-2")).toHaveTextContent("Matches");
+});
+
+it("shows no lot subtotal section when none were printed", async () => {
+  fetchMock.mockImplementation((url: string) => Promise.resolve(response(url.startsWith("/api/extraction-review/summary")
+    ? summary : { ...data, lotSubtotals: [] })));
+  mount(); await ready();
+  expect(screen.queryByTestId("lot-subtotal-check")).toBeNull();
+});
+
 it("links unverified charges to the affected original PDF page", async () => {
   fetchMock.mockImplementation((url: string) => Promise.resolve(response(url.startsWith("/api/extraction-review/summary")
     ? summary : { ...data, evidence: { pricedItemVerification: {

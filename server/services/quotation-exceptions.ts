@@ -27,13 +27,22 @@ export async function quotationExceptionReview(s: QuotationDecisionSnapshot): Pr
   // never against obsolete machine rows or an old source-coverage verdict.
   if (parsed && !s.baseline) {
     const validation = validateExtraction({ ...parsed, amountHt: Number(s.quotation.amountHt), amountTtc: Number(s.quotation.amountTtc),
-      lineItems: s.lines.map(l => ({ description: l.description, total: Number(l.totalHt),
+      lineItems: s.lines.map(l => ({ lineNumber: l.lineNumber, description: l.description, total: Number(l.totalHt),
         unitPrice: l.unitPriceHt == null ? undefined : Number(l.unitPriceHt), pageHint: l.pdfPageHint ?? undefined })) });
     const mapped: Record<string, string> = { pageCoverage: "PAGES_NOT_EXTRACTED", pageLineItems: "PAGE_ITEMS_MISSING",
       lineNumbering: "ITEM_NUMBERING_GAP", lineFragment: "POSSIBLE_CONTINUATION",
-      lineItems: "SOURCE_TOTAL_DISCREPANCY", tvaAmount: "SOURCE_TAX_DISCREPANCY", derivedTotals: "TOTALS_DERIVED_NOT_VERIFIED" };
+      lineItems: "SOURCE_TOTAL_DISCREPANCY", tvaAmount: "SOURCE_TAX_DISCREPANCY", derivedTotals: "TOTALS_DERIVED_NOT_VERIFIED",
+      sectionSubtotal: "LOT_SUBTOTAL_DISCREPANCY", sectionSubtotalUnmatched: "LOT_SUBTOTAL_UNCHECKED" };
     for (const warning of validation.warnings) {
       if (!mapped[warning.field]) continue;
+      // One finding per lot: the lot (not the page) is the identity.
+      if (warning.field === "sectionSubtotal" || warning.field === "sectionSubtotalUnmatched") {
+        const issue = quotationIssue(mapped[warning.field], warning.message, "source", warning.key ?? warning.field);
+        issue.severity = "warning";
+        if (warning.pages?.length) issue.target.page = warning.pages[0];
+        add(issue);
+        continue;
+      }
       if (warning.pages?.length) {
         for (const page of warning.pages) {
           const issue = quotationIssue(mapped[warning.field], warning.message, "source", `${warning.field}-page-${page}`);

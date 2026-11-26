@@ -8,6 +8,8 @@ const line = z.object({
   description: z.string(),
   quantity: number, unit: text, unitPrice: number, total: number,
   percentComplete: number, pageHint: number,
+  // Section headings only bind lines to printed subtotals; never financial.
+  section: z.string().nullable().optional().catch(undefined).transform(v => v ?? undefined),
   // A guessed/malformed visual hint is not financial evidence. Discard it,
   // rather than inventing coordinates or rejecting otherwise valid figures.
   bbox: z.object({
@@ -32,6 +34,11 @@ const responseSchema = z.object({
   declaredTvaRates: z.array(z.number().finite()).nullable().optional(),
   lotReferences: z.array(z.string()).nullable().optional(),
   lineItems: z.array(line).nullable().optional(),
+  // Printed section subtotals are review evidence only. A malformed list is
+  // discarded (the lot check is then skipped), never a reason to fail.
+  sectionSubtotals: z.array(z.object({
+    section: z.string(), parentSection: text, amount: z.number().finite(), page: number,
+  })).nullable().optional().catch(undefined),
   relatedDocumentReferences: z.array(z.object({
     kind: z.enum(["quotation", "order", "invoice"]), reference: z.string(),
     evidenceText: z.string(), page: number,

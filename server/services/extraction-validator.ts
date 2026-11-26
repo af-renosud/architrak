@@ -1,6 +1,7 @@
 import type { ParsedDocument } from "../gmail/document-parser";
 import { roundCurrency, deriveTvaAmount } from "../../shared/financial-utils";
 import { checkExtractionCompleteness, checkFragmentLines } from "./extraction-completeness";
+import { checkSectionSubtotals } from "./quotation-section-subtotals";
 import { isVerifiedOpeningDeposit } from "./opening-deposit-evidence";
 import { resolveOpeningDeposit } from "../../shared/invoice-deposit";
 
@@ -15,6 +16,8 @@ export interface ValidationWarning {
    *  without parsing the human-readable message. */
   lines?: number[];
   pages?: number[];
+  /** Stable identity when one field can raise several findings (one per lot). */
+  key?: string;
 }
 
 export interface ValidationResult {
@@ -108,6 +111,13 @@ export function validateExtraction(parsed: ParsedDocument): ValidationResult {
   // Task #356 — zero-priced reference-less lines that survived the
   // deterministic continuation-fragment merge are flagged for review.
   warnings.push(...checkFragmentLines(parsed.lineItems ?? []));
+
+  // Lot-by-lot check for AI-read quotations: printed section subtotals
+  // against their lines. Exact table readers already reconcile every
+  // section themselves, so their output is never re-checked here.
+  if (!parsed.nativeTableRecovery) {
+    warnings.push(...checkSectionSubtotals(parsed.printedSubtotals, parsed.lineItems ?? []));
+  }
 
   let checksRun = 0;
   let checksPassed = 0;

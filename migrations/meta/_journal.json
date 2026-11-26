@@ -1114,13 +1114,6 @@
       "when": 1795900000000,
       "tag": "0158_quotation_check_points",
       "breakpoints": true
-    },
-    {
-      "idx": 159,
-      "version": "7",
-      "when": 1795669794071,
-      "tag": "0159___schema_drift_check__",
-      "breakpoints": true
     }
   ]
 }

@@ -8,6 +8,7 @@ import { isQuotationRescrapeRunning, quotationRescrapeStatus } from "../services
 import { hasArchitectCorrection } from "../services/architect-quotation-correction";
 import { loadQuotationDecisionSnapshot } from "../services/quotation-decision-snapshot";
 import { quotationExceptionReview } from "../services/quotation-exceptions";
+import { compareSectionSubtotals } from "../services/quotation-section-subtotals";
 
 const router = Router();
 const review = z.object({
@@ -30,10 +31,17 @@ router.get("/api/devis/:id/extraction-review", requireAuth, async (req, res, nex
           OR applied.snapshot->'humanReview'->>'attemptId'=quotation_extraction_events.id::text))
       ORDER BY id DESC LIMIT 1`, [id]);
     const snapshot = await loadQuotationDecisionSnapshot(id);
-    res.json({ exceptionReview: snapshot ? await quotationExceptionReview(snapshot) : null,
+    const evidence = candidates[0]?.snapshot?.extraction ?? quotation.aiExtractedData;
+    // Lot-by-lot comparison of the reviewed extraction (printed subtotals vs
+    // their extracted lines). Exact table readers never carry subtotals.
+    const lotSubtotals = evidence && typeof evidence === "object" && !(evidence as any).nativeTableRecovery
+      ? compareSectionSubtotals((evidence as any).printedSubtotals,
+        Array.isArray((evidence as any).lineItems) ? (evidence as any).lineItems : [])
+      : [];
+    res.json({ lotSubtotals, exceptionReview: snapshot ? await quotationExceptionReview(snapshot) : null,
       events: rows, running: await isQuotationRescrapeRunning(id), job: await quotationRescrapeStatus(id), candidateAttemptId: candidates[0]?.id ?? null,
       humanWorkingVersion: await hasArchitectCorrection(id),
-      evidence: candidates[0]?.snapshot?.extraction ?? quotation.aiExtractedData,
+      evidence,
       sourcePdfUrl: `/api/devis/${id}/pdf?variant=original` });
   } catch (error) { next(error); }
 });

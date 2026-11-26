@@ -16,6 +16,9 @@ export const ADVISORY_CODES = {
   // Task #356 — a zero-priced, reference-less line that is likely the
   // continuation paragraph of the previous item's description.
   LINE_FRAGMENT_SUSPECTED: "line_fragment_suspected",
+  // A printed lot/section subtotal disagrees with the sum of its lines.
+  SECTION_SUBTOTAL_MISMATCH: "section_subtotal_mismatch",
+  SECTION_SUBTOTAL_UNMATCHED: "section_subtotal_unmatched",
   GENERIC: "generic",
 } as const;
 
@@ -59,6 +62,8 @@ export function deriveAdvisoryCode(w: ValidatorWarningLike): AdvisoryCode {
   if (w.field === "lineNumbering") return ADVISORY_CODES.LINE_NUMBERING_GAP;
   if (w.field === "derivedTotals") return ADVISORY_CODES.DERIVED_TOTALS_UNVERIFIED;
   if (w.field === "lineFragment") return ADVISORY_CODES.LINE_FRAGMENT_SUSPECTED;
+  if (w.field === "sectionSubtotal") return ADVISORY_CODES.SECTION_SUBTOTAL_MISMATCH;
+  if (w.field === "sectionSubtotalUnmatched") return ADVISORY_CODES.SECTION_SUBTOTAL_UNMATCHED;
   if (w.field === "retenueDeGarantie") return ADVISORY_CODES.RETENUE_GARANTIE_DEVIATION;
   if (w.field === "netAPayer") return ADVISORY_CODES.NET_A_PAYER_MISMATCH;
   return ADVISORY_CODES.GENERIC;

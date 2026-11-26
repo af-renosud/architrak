@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { QuotationExceptions } from "./QuotationExceptions";
+import { LotSubtotalCheck } from "./LotSubtotalCheck";
 import { quotationFieldLabel } from "./quotation-review-labels";
 import "./review-source.css";
 import {
@@ -221,6 +222,7 @@ export function QuotationExtractionReview({
         </details>
       </li>)}</ol>
     </details>}
+    {!review.isError && <LotSubtotalCheck rows={review.data?.lotSubtotals ?? []} sourceUrl={hasPdf ? sourceUrl : undefined} />}
     {review.data?.exceptionReview && !review.isError && <QuotationExceptions
       review={review.data.exceptionReview} devisId={devisId} sourceUrl={hasPdf ? sourceUrl : undefined}
       disabled={disabled || record.isPending || apply.isPending} historicalIssues={pricedIssues} />}
