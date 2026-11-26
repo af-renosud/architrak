@@ -5,6 +5,7 @@ import FormulaParser from "fast-formula-parser";
 import { computeWorksheet, detectLotHeading, formatCents, type WorksheetLineData } from "../../../shared/quotation-worksheet";
 import { buildWorksheetWorkbook, SHEET } from "../quotation-worksheet-excel";
 import type { WorksheetDetail } from "../quotation-worksheet";
+import type { QuotationCheckPoint } from "../../../shared/quotation-checks";
 
 let nextId = 1;
 const line = (p: Partial<WorksheetLineData>): WorksheetLineData => ({
@@ -182,7 +183,7 @@ describe("client worksheet Excel export", () => {
     await wb.xlsx.load(buffer as any);
     const p = wb.getWorksheet(SHEET.points)!;
     const descs: string[] = [];
-    p.eachRow((row, n) => { if (n >= 4) descs.push(String((row.getCell(3).value as any)?.result ?? row.getCell(3).value)); });
+    p.eachRow((row, n) => { if (n >= 4 && (row.getCell(4).value as any)?.formula) descs.push(String((row.getCell(3).value as any)?.result)); });
     expect(descs).toEqual(["Plancher", "Fossé", "Unpriced option", "Extra lintel", "Prise", "Outdoor socket", "Gate motor"]);
     const plancher = d.lines[1];
     expect((p.getCell("D4").value as any).formula).toBe(`'${SHEET.quote}'!L${map.lineRows.get(plancher.id)}`);
@@ -191,6 +192,34 @@ describe("client worksheet Excel export", () => {
     const q = wb.getWorksheet(SHEET.quote)!;
     expect((q.getCell(`J${map.depositRow}`).value as any).result ?? "").toBe("");
     expect(evaluator(wb).value(SHEET.quote, `J${map.depositRow}`)).toBe("");
+    expect(map.checksFirstRow).toBeNull();
+    const texts: string[] = [];
+    p.eachRow(row => texts.push(String(row.getCell(1).value ?? "")));
+    expect(texts).toContain("No open points.");
+  });
+
+  it("adds the quotation's open automatic points after the worksheet notes", async () => {
+    const d = detail(fixture(), null);
+    const checks: QuotationCheckPoint[] = [
+      { key: "rule:unpriced_line:9:3", source: "rule", category: "unpriced_line", finding: "Line 144 has a quantity of 3 u but no price.",
+        suggestedAction: "Ask the contractor to price this line.", lines: [{ id: 9, lineNumber: 144, lot: "CVC", description: "Gainable électricité" }] },
+      { key: "ai:4:0", source: "ai", category: "ai_annotation", finding: "Line 60 carries a '?' next to the quantity.",
+        suggestedAction: "Ask the contractor to confirm the quantity.", lines: [{ id: 10, lineNumber: 60, lot: "Couverture", description: "Velux" }] },
+    ];
+    const { buffer, map } = await buildWorksheetWorkbook(d, { checks });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buffer as any);
+    const p = wb.getWorksheet(SHEET.points)!;
+    const first = map.checksFirstRow!;
+    expect(first).toBeGreaterThan(10);
+    expect(p.getCell(`C${first - 1}`).value).toBe("Lines");
+    expect(p.getCell(`A${first}`).value).toBe("Automatic");
+    expect(p.getCell(`B${first}`).value).toBe("Unpriced line");
+    expect(p.getCell(`C${first}`).value).toBe("Line 144 (CVC): Gainable électricité");
+    expect(p.getCell(`D${first}`).value).toBe("Line 144 has a quantity of 3 u but no price.");
+    expect(p.getCell(`G${first}`).value).toBe("Ask the contractor to price this line.");
+    expect(p.getCell(`A${first + 1}`).value).toBe("AI suggestion");
+    expect(p.getCell(`B${first + 1}`).value).toBe("Contractor annotation");
   });
 });
 
@@ -200,6 +229,7 @@ describe("lot headings", () => {
     expect(detectLotHeading("Lot etude\nréalisation d'une reprise")).toBe("Etude");
     expect(detectLotHeading("Lot Electricité Prise de courant 16 A")).toBe("Electricité");
     expect(detectLotHeading("Lot CVC Plomberie Mitigeur")).toBe("CVC");
+    expect(detectLotHeading("Lot cloison FOURNITURE ET POSE DE PARQUET")).toBe("Cloison");
     expect(detectLotHeading("Réparation structurelle de maçonnerie")).toBeNull();
   });
 });

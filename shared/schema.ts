@@ -4719,3 +4719,37 @@ export const quotationWorksheetAudit = pgTable("quotation_worksheet_audit", {
   check("quotation_worksheet_audit_action_check", sql`${table.action} IN ('create','duplicate','update_line','add_line','remove_line','restore_line','delete_line','update_settings')`),
 ]);
 export type QuotationWorksheetAuditRow = typeof quotationWorksheetAudit.$inferSelect;
+
+/**
+ * Automatic "points to check" on a quotation. Rule points are computed on
+ * read; these tables record the architect's decisions (append-only) and the
+ * optional AI suggestion runs.
+ */
+export const quotationCheckReviews = pgTable("quotation_check_reviews", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull(),
+  pointKey: text("point_key").notNull(),
+  action: text("action").notNull(),
+  reason: text("reason"),
+  worksheetId: integer("worksheet_id"),
+  point: jsonb("point").notNull(),
+  actorUserId: integer("actor_user_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+  index("quotation_check_reviews_devis_idx").on(table.devisId, table.id),
+  check("quotation_check_reviews_action_check", sql`${table.action} IN ('dismissed','reopened','added_to_worksheet')`),
+]);
+export const quotationCheckAiRuns = pgTable("quotation_check_ai_runs", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  status: text("status").notNull(),
+  linesFingerprint: text("lines_fingerprint").notNull(),
+  modelId: text("model_id"),
+  points: jsonb("points"),
+  error: text("error"),
+  actorUserId: integer("actor_user_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+  index("quotation_check_ai_runs_devis_idx").on(table.devisId, table.id),
+  check("quotation_check_ai_runs_status_check", sql`${table.status} IN ('succeeded','failed')`),
+]);

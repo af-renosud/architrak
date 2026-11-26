@@ -92,3 +92,4 @@
 - [Replacement carry by wording](replacement-wording-carry.md) — unique compacted-wording matches carry work as "figures changed"; repeated wording never matches; coded-lot VAT exact match = checked.
 - [Client sees sealed releases](client-publication-snapshots.md) — public quotation surfaces serve only immutable sealed copies; edits reach clients only via explicit "update copy".
 - [Client worksheet parity](client-worksheet-excel.md) — screen, API and Excel download must agree to the cent; change compute and formulas together.
+- [Quotation points to check](quotation-points-to-check.md) — rule points computed on read, keyed by lines+figures; reviews append-only; API is /points-to-check (/checks is taken).

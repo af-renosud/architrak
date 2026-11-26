@@ -86,6 +86,7 @@ import { renderQuestionHtml } from "@shared/question-format";
 import { DevisAfterSigning } from "@/components/devis/DevisAfterSigning";
 import { SupportingPdfsPanel } from "@/components/devis/SupportingPdfsPanel";
 import { ClientWorksheetPanel } from "@/components/devis/ClientWorksheetPanel";
+import { QuotationChecksPanel } from "@/components/devis/QuotationChecksPanel";
 import { ClientConversationPanel } from "@/components/devis/ClientConversationPanel";
 import { countDevisSignOff } from "@/components/devis/devis-counters";
 import { devisCardClassName, signedDevisFirst } from "@/components/devis/devis-card-style";
@@ -6831,6 +6832,8 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         hasSigningSnapshot={!!devis.archisignPinnedPdfStorageKey || !!devis.signedPdfStorageKey}
       />
       <ClientWorksheetPanel devisId={devis.id} isArchived={isArchived} hasLines={(lineItems?.length ?? 0) > 0} />
+      <QuotationChecksPanel devisId={devis.id} isArchived={isArchived} hasLines={(lineItems?.length ?? 0) > 0}
+        linesSignature={(lineItems ?? []).map(l => `${l.id}:${l.quantity}:${l.unitPriceHt}:${l.totalHt}:${l.description.length}`).join("|")} />
       <DevisDetailTabs
         devis={devis}
         lineItems={lineItems}

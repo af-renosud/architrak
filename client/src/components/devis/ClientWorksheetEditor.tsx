@@ -10,6 +10,7 @@ import {
   type WorksheetLineData, type WorksheetLineResult, type WorksheetStatus, type WorksheetTag,
 } from "@shared/quotation-worksheet";
 import { useWorksheet, type WorksheetDetail } from "./use-client-worksheet";
+import { QuotationChecksPanel } from "./QuotationChecksPanel";
 
 const euros = (c: number) => c / 100;
 const STATUS_STYLE: Record<WorksheetStatus, string> = {
@@ -126,6 +127,9 @@ export function ClientWorksheetEditor({ worksheetId, devisId, onClose, onOpenWor
       <WorksheetSummaryBar data={data} />
 
       <div className="flex-1 overflow-auto px-5 pb-6">
+        <div className="py-3">
+          <QuotationChecksPanel devisId={devisId} isArchived={readOnly} hasLines worksheetId={w.id} beforeWorksheetChange={flush} />
+        </div>
         <table className="w-full border-collapse text-xs" data-testid="table-worksheet">
           <thead className="sticky top-0 z-10 bg-slate-800 text-[10px] uppercase tracking-wide text-white">
             <tr>

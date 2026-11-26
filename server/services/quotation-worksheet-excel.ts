@@ -1,6 +1,7 @@
 import ExcelJS from "exceljs";
 import { WORKSHEET_TAGS, cents, groupWorksheetLines, lineKind, productCents, type WorksheetLineData } from "../../shared/quotation-worksheet";
 import type { WorksheetDetail } from "./quotation-worksheet";
+import { CHECK_CATEGORIES, type QuotationCheckPoint } from "../../shared/quotation-checks";
 
 /**
  * Three-sheet client worksheet workbook with live formulas. Every formula
@@ -31,9 +32,11 @@ export interface WorksheetWorkbookMap {
   firstLineRow: number; lastLineRow: number;
   totalRow: number; vatRows: Array<{ rate: string; row: number }>; ttcRow: number; depositRow: number;
   depositCell: string;
+  /** First row of the automatic points-to-check table, when any are listed. */
+  checksFirstRow: number | null;
 }
 
-export async function buildWorksheetWorkbook(detail: WorksheetDetail): Promise<{ buffer: Buffer; map: WorksheetWorkbookMap }> {
+export async function buildWorksheetWorkbook(detail: WorksheetDetail, options: { checks?: QuotationCheckPoint[] } = {}): Promise<{ buffer: Buffer; map: WorksheetWorkbookMap }> {
   const wb = new ExcelJS.Workbook();
   wb.creator = "ArchiTrak";
   wb.created = new Date(detail.worksheet.updatedAt);
@@ -238,9 +241,41 @@ export async function buildWorksheetWorkbook(detail: WorksheetDetail): Promise<{
     row.getCell(7).alignment = { wrapText: true, vertical: "top" };
   }
   if (pr === 4) points.getCell("A4").value = "No notes, tags or changes yet.";
+  if (pr === 4) pr = 5;
+
+  // Open automatic points to check on the quotation (dismissed points are left out).
+  const checks = options.checks ?? [];
+  pr += 1;
+  points.getCell(`A${pr}`).value = "Automatic points to check on the quotation";
+  points.getCell(`A${pr}`).font = { bold: true, size: 12 };
+  pr += 1;
+  let checksFirstRow: number | null = null;
+  if (!checks.length) {
+    points.getCell(`A${pr}`).value = "No open points.";
+  } else {
+    ["Source", "Category", "Lines", "Finding", "", "", "Suggested action"].forEach((h, i) => {
+      const cell = points.getRow(pr).getCell(i + 1);
+      cell.value = h; cell.font = { bold: true, color: { argb: "FFFFFFFF" } }; cell.fill = HEAD_FILL;
+    });
+    pr += 1;
+    checksFirstRow = pr;
+    for (const p of checks) {
+      const row = points.getRow(pr);
+      row.getCell(1).value = p.source === "ai" ? "AI suggestion" : "Automatic";
+      row.getCell(2).value = CHECK_CATEGORIES[p.category];
+      row.getCell(3).value = p.lines.map(l => `Line ${l.lineNumber} (${l.lot}): ${l.description}`).join("\n");
+      row.getCell(4).value = p.finding;
+      points.mergeCells(pr, 4, pr, 6);
+      row.getCell(7).value = p.suggestedAction;
+      for (const c of [3, 4, 7]) row.getCell(c).alignment = { wrapText: true, vertical: "top" };
+      row.getCell(1).alignment = { vertical: "top" };
+      row.getCell(2).alignment = { vertical: "top", wrapText: true };
+      pr += 1;
+    }
+  }
 
   const buffer = Buffer.from(await wb.xlsx.writeBuffer());
-  return { buffer, map: { lineRows, lotSubtotalRows, firstLineRow, lastLineRow, totalRow, vatRows, ttcRow, depositRow, depositCell } };
+  return { buffer, map: { lineRows, lotSubtotalRows, firstLineRow, lastLineRow, totalRow, vatRows, ttcRow, depositRow, depositCell, checksFirstRow } };
 }
 
 function writeLine(ws: ExcelJS.Worksheet, r: number, line: WorksheetLineData, res: { item: string; status: string; originalCents: number | null; revisedCents: number | null; differenceCents: number | null }) {

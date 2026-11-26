@@ -2,9 +2,10 @@ import { Router, type NextFunction, type Response } from "express";
 import { requireAuth } from "../auth/middleware";
 import { WorksheetError, worksheetService } from "../services/quotation-worksheet";
 import { buildWorksheetWorkbook } from "../services/quotation-worksheet-excel";
+import { quotationChecksService } from "../services/quotation-checks";
 
 /** Architect-only client worksheets (behind the authenticated perimeter). */
-export function createQuotationWorksheetRouter(service = worksheetService) {
+export function createQuotationWorksheetRouter(service = worksheetService, checks = quotationChecksService) {
   const router = Router();
   router.use(["/api/devis/:devisId/worksheets", "/api/worksheets"], requireAuth, (_req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
@@ -47,7 +48,7 @@ export function createQuotationWorksheetRouter(service = worksheetService) {
   router.get("/api/worksheets/:id/export.xlsx", async (req, res, next) => {
     try {
       const detail = await service().get(id(req.params.id));
-      const { buffer } = await buildWorksheetWorkbook(detail);
+      const { buffer } = await buildWorksheetWorkbook(detail, { checks: await checks().openPoints(detail.quotation.id) });
       const safe = `${detail.quotation.number ?? detail.quotation.code}-${detail.worksheet.title}`.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 120);
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", `attachment; filename="${safe}.xlsx"`);

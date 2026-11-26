@@ -258,7 +258,9 @@ export function detectLotHeading(description: string): string | null {
     if (label.length === words.length) return null;
   } else if (words[0]) {
     label.push(words[0]);
-    for (const w of words.slice(1)) { if (!isUpper(w) || w.length < 2) break; label.push(w); }
+    // Only short capitals continue a lower-case heading ("Lot plomberie VMC");
+    // longer capitals start the item text ("Lot cloison FOURNITURE ET POSE…").
+    for (const w of words.slice(1)) { if (!isUpper(w) || w.length < 2 || w.length > 4) break; label.push(w); }
   }
   return label.length ? tidy(label.join(" ")) : null;
 }

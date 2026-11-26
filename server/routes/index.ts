@@ -18,6 +18,7 @@ import clientChecksRouter from "./client-checks";
 import clientProjectShareRouter from "./client-project-share";
 import clientReleasesRouter from "./client-releases";
 import quotationWorksheetsRouter from "./quotation-worksheets";
+import quotationChecksRouter from "./quotation-checks";
 import clientBudgetRouter from "./client-budget";
 import insuranceGateRouter from "./insurance-gate";
 import invoicesRouter from "./invoices";
@@ -124,6 +125,7 @@ export async function registerRoutes(
   app.use(clientProjectShareRouter);
   app.use(clientReleasesRouter);
   app.use(quotationWorksheetsRouter);
+  app.use(quotationChecksRouter);
   app.use(clientBudgetRouter);
   app.use(insuranceGateRouter);
   app.use(invoicesRouter);
