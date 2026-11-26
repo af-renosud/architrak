@@ -85,6 +85,7 @@ import { QuestionEditor } from "./QuestionEditor";
 import { renderQuestionHtml } from "@shared/question-format";
 import { DevisAfterSigning } from "@/components/devis/DevisAfterSigning";
 import { SupportingPdfsPanel } from "@/components/devis/SupportingPdfsPanel";
+import { ClientWorksheetPanel } from "@/components/devis/ClientWorksheetPanel";
 import { ClientConversationPanel } from "@/components/devis/ClientConversationPanel";
 import { countDevisSignOff } from "@/components/devis/devis-counters";
 import { devisCardClassName, signedDevisFirst } from "@/components/devis/devis-card-style";
@@ -6829,6 +6830,7 @@ function DevisDetailInline({ devis, projectId, contractors, lots, isArchived = f
         status={devis.status}
         hasSigningSnapshot={!!devis.archisignPinnedPdfStorageKey || !!devis.signedPdfStorageKey}
       />
+      <ClientWorksheetPanel devisId={devis.id} isArchived={isArchived} hasLines={(lineItems?.length ?? 0) > 0} />
       <DevisDetailTabs
         devis={devis}
         lineItems={lineItems}

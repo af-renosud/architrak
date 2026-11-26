@@ -1100,6 +1100,13 @@
       "when": 1795700000000,
       "tag": "0156_client_quotation_releases",
       "breakpoints": true
+    },
+    {
+      "idx": 157,
+      "version": "7",
+      "when": 1795800000000,
+      "tag": "0157_quotation_client_worksheets",
+      "breakpoints": true
     }
   ]
 }

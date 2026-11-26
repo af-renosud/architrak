@@ -91,3 +91,4 @@
 - [Autoscale background CPU](autoscale-background-cpu.md) — prod background rasterisation ~100x slower than dev; likely Autoscale CPU only during requests; don't add more fallbacks blindly.
 - [Replacement carry by wording](replacement-wording-carry.md) — unique compacted-wording matches carry work as "figures changed"; repeated wording never matches; coded-lot VAT exact match = checked.
 - [Client sees sealed releases](client-publication-snapshots.md) — public quotation surfaces serve only immutable sealed copies; edits reach clients only via explicit "update copy".
+- [Client worksheet parity](client-worksheet-excel.md) — screen, API and Excel download must agree to the cent; change compute and formulas together.

@@ -4652,3 +4652,70 @@ export type PlanningRevisionLineReview = typeof planningRevisionLineReviews.$inf
 export type PlanningRevisionSource = typeof planningRevisionSources.$inferSelect;
 export type PlanningImportJob = typeof planningImportJobs.$inferSelect;
 export type PlanningRevisionEvent = typeof planningRevisionEvents.$inferSelect;
+
+/**
+ * Client worksheets — architect-only working copies of a quotation used in
+ * client meetings. Original figures are snapshotted from the extracted lines
+ * at creation; the devis, its lines, PDF and signed commitments are never
+ * modified. Every change is written to the append-only audit table.
+ */
+export const quotationWorksheets = pgTable("quotation_worksheets", {
+  id: serial("id").primaryKey(),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  meetingDate: date("meeting_date"),
+  depositPercent: numeric("deposit_percent", { precision: 5, scale: 2 }),
+  duplicatedFromId: integer("duplicated_from_id"),
+  revision: integer("revision").notNull().default(1),
+  createdByUserId: integer("created_by_user_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+  index("quotation_worksheets_devis_idx").on(table.devisId),
+  check("quotation_worksheets_deposit_check", sql`${table.depositPercent} IS NULL OR (${table.depositPercent} >= 0 AND ${table.depositPercent} <= 100)`),
+  check("quotation_worksheets_revision_check", sql`${table.revision} > 0`),
+]);
+export type QuotationWorksheet = typeof quotationWorksheets.$inferSelect;
+
+export const quotationWorksheetLines = pgTable("quotation_worksheet_lines", {
+  id: serial("id").primaryKey(),
+  worksheetId: integer("worksheet_id").notNull().references(() => quotationWorksheets.id, { onDelete: "cascade" }),
+  sourceLineItemId: integer("source_line_item_id"),
+  position: integer("position").notNull(),
+  section: text("section").notNull().default("lot"),
+  lotLabel: text("lot_label").notNull(),
+  description: text("description").notNull(),
+  unit: text("unit"),
+  originalQuantity: numeric("original_quantity", { precision: 12, scale: 3 }),
+  originalUnitPrice: numeric("original_unit_price", { precision: 12, scale: 2 }),
+  originalTotal: numeric("original_total", { precision: 12, scale: 2 }),
+  vatRate: numeric("vat_rate", { precision: 6, scale: 3 }),
+  clientQuantity: numeric("client_quantity", { precision: 12, scale: 3 }),
+  clientUnitPrice: numeric("client_unit_price", { precision: 12, scale: 2 }),
+  note: text("note"),
+  tag: text("tag"),
+}, (table) => [
+  index("quotation_worksheet_lines_worksheet_idx").on(table.worksheetId, table.position),
+  check("quotation_worksheet_lines_section_check", sql`${table.section} IN ('lot','meeting')`),
+  check("quotation_worksheet_lines_tag_check", sql`${table.tag} IS NULL OR ${table.tag} IN ('cost_saving','value_added','query_contractor')`),
+  check("quotation_worksheet_lines_vat_check", sql`${table.vatRate} IS NULL OR (${table.vatRate} >= 0 AND ${table.vatRate} <= 100)`),
+]);
+export type QuotationWorksheetLine = typeof quotationWorksheetLines.$inferSelect;
+
+export const quotationWorksheetAudit = pgTable("quotation_worksheet_audit", {
+  id: serial("id").primaryKey(),
+  worksheetId: integer("worksheet_id").notNull(),
+  devisId: integer("devis_id").notNull(),
+  lineId: integer("line_id"),
+  actorUserId: integer("actor_user_id"),
+  action: text("action").notNull(),
+  reason: text("reason"),
+  before: jsonb("before"),
+  after: jsonb("after"),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+  index("quotation_worksheet_audit_worksheet_idx").on(table.worksheetId, table.id),
+  check("quotation_worksheet_audit_action_check", sql`${table.action} IN ('create','duplicate','update_line','add_line','remove_line','restore_line','delete_line','update_settings')`),
+]);
+export type QuotationWorksheetAuditRow = typeof quotationWorksheetAudit.$inferSelect;
