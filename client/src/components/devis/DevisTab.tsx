@@ -4381,6 +4381,8 @@ function useProjectShareState(projectId: string) {
 function invalidateProjectShare(projectId: string) {
   // Prefix invalidation also refreshes the audit-history query below.
   queryClient.invalidateQueries({ queryKey: projectScopedKey(projectId, "client-share") });
+  // Worksheet share panels read whether an active link exists.
+  queryClient.invalidateQueries({ predicate: q => q.queryKey[0] === "/api/worksheets" && q.queryKey[2] === "client-share" });
 }
 
 // Task #394 — append-only audit trail of link actions (issue / rotate /

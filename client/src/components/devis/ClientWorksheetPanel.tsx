@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { FileSpreadsheet, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -21,6 +22,11 @@ export function ClientWorksheetPanel({ devisId, isArchived, hasLines }: { devisI
   const [title, setTitle] = useState("");
   const [creating, setCreating] = useState(false);
   const { data: worksheets, isLoading } = useWorksheetList(devisId, expanded || openId != null);
+  const { data: agreement } = useQuery<Record<number, { sharedRevision: number | null; unreadComments: number; lastRevisionRequestAt: string | null }>>({
+    queryKey: ["/api/devis", devisId, "worksheets", "agreement-summary"], enabled: expanded || openId != null,
+    // Client comments arrive from the client link: refetch on open and poll while visible.
+    staleTime: 0, refetchOnMount: "always", refetchOnWindowFocus: true, refetchInterval: 60000,
+  });
 
   const create = async () => {
     setCreating(true);
@@ -55,6 +61,11 @@ export function ClientWorksheetPanel({ devisId, isArchived, hasLines }: { devisI
               className="flex w-full items-center gap-2 rounded border px-2 py-1.5 text-left text-[11px] hover:bg-slate-50">
               <span className="font-medium">{w.title}</span>
               {w.meetingDate && <span className="text-muted-foreground">· meeting {fmt(w.meetingDate)}</span>}
+              {agreement?.[w.id]?.sharedRevision != null && <span className="rounded-full bg-sky-50 px-1.5 text-[10px] text-sky-700" data-testid={`badge-worksheet-shared-${w.id}`}>
+                Shared with client{agreement[w.id].sharedRevision !== w.revision ? " (older version)" : ""}</span>}
+              {(agreement?.[w.id]?.unreadComments ?? 0) > 0 && <span className="rounded-full bg-amber-100 px-1.5 text-[10px] text-amber-800" data-testid={`badge-worksheet-comments-${w.id}`}>
+                {agreement![w.id].unreadComments} new client comment{agreement![w.id].unreadComments > 1 ? "s" : ""}</span>}
+              {agreement?.[w.id]?.lastRevisionRequestAt && <span className="rounded-full bg-emerald-50 px-1.5 text-[10px] text-emerald-700">Revision requested {fmt(agreement[w.id].lastRevisionRequestAt!)}</span>}
               <span className="ml-auto text-muted-foreground">updated {fmt(w.updatedAt)}{w.createdBy ? ` · ${w.createdBy}` : ""}</span>
             </button>
           ))}

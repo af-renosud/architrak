@@ -11,6 +11,7 @@ import {
 } from "@shared/quotation-worksheet";
 import { useWorksheet, type WorksheetDetail } from "./use-client-worksheet";
 import { QuotationChecksPanel } from "./QuotationChecksPanel";
+import { WorksheetAgreementPanel } from "./WorksheetAgreementPanel";
 
 const euros = (c: number) => c / 100;
 const STATUS_STYLE: Record<WorksheetStatus, string> = {
@@ -23,7 +24,8 @@ const STATUS_STYLE: Record<WorksheetStatus, string> = {
 const ACTION_LABELS: Record<string, string> = {
   create: "Worksheet created from the quotation", duplicate: "Worksheet duplicated", update_line: "Line changed",
   add_line: "Line added", remove_line: "Line removed", restore_line: "Line restored", delete_line: "Added line deleted",
-  update_settings: "Worksheet details changed",
+  update_settings: "Worksheet details changed", share_client: "Shared with the client", withdraw_client: "Removed from the client link",
+  revision_request: "Revised quotation requested from the contractor",
 };
 const fmtDate = (v: string) => new Date(v).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "Europe/Paris" });
 const trimNum = (v: string | null) => (v == null ? "" : String(Number(v)));
@@ -129,6 +131,9 @@ export function ClientWorksheetEditor({ worksheetId, devisId, onClose, onOpenWor
       <div className="flex-1 overflow-auto px-5 pb-6">
         <div className="py-3">
           <QuotationChecksPanel devisId={devisId} isArchived={readOnly} hasLines worksheetId={w.id} beforeWorksheetChange={flush} />
+        </div>
+        <div className="pb-3">
+          <WorksheetAgreementPanel worksheetId={w.id} devisId={devisId} projectId={data.quotation.projectId} revision={w.revision} readOnly={readOnly} flush={flush} />
         </div>
         <table className="w-full border-collapse text-xs" data-testid="table-worksheet">
           <thead className="sticky top-0 z-10 bg-slate-800 text-[10px] uppercase tracking-wide text-white">

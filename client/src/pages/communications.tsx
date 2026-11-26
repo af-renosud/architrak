@@ -423,6 +423,7 @@ const typeLabels: Record<string, string> = {
   devis_signature_context: "Devis Sent (Signature)",
   devis_signed_contractor_copy: "Signed Devis — Contractor Copy",
   devis_check_bundle: "Devis Questions Bundle",
+  devis_revision_request: "Revised Quotation Request",
   general: "General",
 };
 

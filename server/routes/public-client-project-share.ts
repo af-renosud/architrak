@@ -36,6 +36,9 @@ import { quotationCommitmentStatus } from "../../shared/quotation-commitment";
 import { getPublicClientBudget } from "../services/client-budget";
 import type { PublicClientBudget } from "@shared/client-budget";
 import { clientSignedPdfKey, isAutomaticSignedQuotation } from "../services/client-project-signed-quotation";
+import { worksheetAgreementService } from "../services/worksheet-agreement";
+import { WorksheetError } from "../services/quotation-worksheet";
+import { renderWorksheetShareShell } from "./worksheet-share-shell";
 
 /**
  * Public project-scoped client share link (Task #388) — /p/client/project/:token.
@@ -52,6 +55,11 @@ import { clientSignedPdfKey, isAutomaticSignedQuotation } from "../services/clie
  */
 export interface ProjectSharePayload {
   budget?: PublicClientBudget;
+  /** Sealed copies of agreed client worksheets (latest shared version of each). */
+  worksheets?: Array<{
+    releaseId: number; title: string; quotationRef: string; contractorName: string; meetingDate: string | null;
+    sealedAt: string; originalTtcCents: number; revisedTtcCents: number; commentCount: number;
+  }>;
   project: { name: string } | null;
   client: { name: string | null; email: string };
   quotations: Array<{
@@ -197,6 +205,7 @@ export async function buildProjectSharePayload(
 
   return {
     budget: await getPublicClientBudget(token.projectId),
+    worksheets: await worksheetAgreementService().visibleForProject(token.projectId),
     project: project ? { name: project.name } : null,
     client: { name: token.clientName ?? null, email: token.clientEmail },
     quotations,
@@ -494,6 +503,69 @@ router.post(
 router.post("/p/client/project/:token/devis/:devisId/agree", shareWriteIpLimiter, shareWriteTokenLimiter, retiredVerdictHandler);
 router.post("/p/client/project/:token/devis/:devisId/reject", shareWriteIpLimiter, shareWriteTokenLimiter, retiredVerdictHandler);
 
+/** Agreed worksheet copies (sealed, read-only) under the project token. */
+const worksheetParams = z.object({
+  token: z.string().min(20).max(200),
+  releaseId: z.coerce.number().int().positive(),
+});
+const worksheetCommentBody = z.object({ body: z.string().min(1).max(5000) }).strict();
+
+router.get(
+  "/p/client/project/:token/worksheets/:releaseId",
+  shareReadIpLimiter, shareReadTokenLimiter,
+  validateRequest({ params: worksheetParams }),
+  async (req, res) => {
+    const lookup = await resolveProjectShareToken(tokenFromReq(req));
+    if (!lookup.ok) {
+      res.status(lookup.reason === "expired" ? 410 : 404).type("html").send(lookup.reason === "expired" ? renderShareExpired() : renderShareInvalid());
+      return;
+    }
+    const release = await worksheetAgreementService().publicRelease(lookup.token.projectId, Number(req.params.releaseId));
+    if (!release) { res.status(404).type("html").send(renderShareInvalid()); return; }
+    const base = `/p/client/project/${encodeURIComponent(tokenFromReq(req))}`;
+    res.type("html").send(renderWorksheetShareShell({
+      dataUrl: `${base}/worksheets/${release.releaseId}/data`, commentUrl: `${base}/worksheets/${release.releaseId}/comments`,
+      backUrl: base, preview: false,
+    }));
+  },
+);
+
+router.get(
+  "/p/client/project/:token/worksheets/:releaseId/data",
+  shareReadIpLimiter, shareReadTokenLimiter,
+  validateRequest({ params: worksheetParams }),
+  async (req, res) => {
+    const lookup = await resolveProjectShareToken(tokenFromReq(req));
+    if (!lookup.ok) return res.status(lookup.reason === "expired" ? 410 : 404).json({ message: "Invalid or expired link" });
+    const release = await worksheetAgreementService().publicRelease(lookup.token.projectId, Number(req.params.releaseId));
+    if (!release) return res.status(404).json({ message: "These agreed changes are no longer shared." });
+    await storage.touchProjectShareTokenUsed(lookup.token.id, computeTokenExpiry());
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json(release);
+  },
+);
+
+router.post(
+  "/p/client/project/:token/worksheets/:releaseId/comments",
+  shareWriteIpLimiter, shareWriteTokenLimiter,
+  validateRequest({ params: worksheetParams, body: worksheetCommentBody }),
+  async (req, res) => {
+    const lookup = await resolveProjectShareToken(tokenFromReq(req));
+    if (!lookup.ok) return res.status(lookup.reason === "expired" ? 410 : 404).json({ message: "Invalid or expired link" });
+    const t = lookup.token;
+    try {
+      const comment = await worksheetAgreementService().addClientComment(
+        { id: t.id, projectId: t.projectId, clientEmail: t.clientEmail, clientName: t.clientName ?? null },
+        Number(req.params.releaseId), req.body);
+      await storage.touchProjectShareTokenUsed(t.id, computeTokenExpiry());
+      res.status(201).json(comment);
+    } catch (error) {
+      if (error instanceof WorksheetError) return res.status(error.status).json({ message: error.message });
+      throw error;
+    }
+  },
+);
+
 /** Download the combined EN+FR "complete package" PDF (membership-gated). */
 router.get(
   "/p/client/project/:token/devis/:devisId/package.pdf",
@@ -553,6 +625,9 @@ export function renderProjectShareShell(
   const signedUrlBase = isPreview
     ? `/api/projects/${opts.projectId}/client-share/preview/devis`
     : `/p/client/project/${encodeURIComponent(opts.token)}/devis`;
+  const worksheetUrlBase = isPreview
+    ? `/api/projects/${opts.projectId}/client-share/preview/worksheets`
+    : `/p/client/project/${encodeURIComponent(opts.token)}/worksheets`;
   const previewBanner = isPreview
     ? `<div class="preview-banner" data-testid="banner-project-share-preview">Architect preview — this is what the client will see. Nothing is sent or recorded.</div>`
     : "";
@@ -627,6 +702,7 @@ const DATA_URL = ${JSON.stringify(dataUrl)};
 const DETAIL_URL_BASE = ${JSON.stringify(detailUrlBase)};
 const DETAIL_URL_SUFFIX = ${JSON.stringify(detailUrlSuffix)};
 const SIGNED_URL_BASE = ${JSON.stringify(signedUrlBase)};
+const WORKSHEET_URL_BASE = ${JSON.stringify(worksheetUrlBase)};
 const STATUS_LABELS = {
   signed: "Signed",
   rejected: "Declined",
@@ -706,6 +782,19 @@ function renderQuotation(q) {
     + (href ? '</a>' : '</div>');
 }
 
+function renderWorksheets(list) {
+  if (!list || !list.length) return "";
+  const cents = (c) => formatMoney(c / 100);
+  return '<section class="fin" data-testid="section-agreed-worksheets"><h2>Agreed changes from meetings</h2>'
+    + '<p class="trade" style="margin:0 0 12px">Fixed copies of the changes agreed with you. Revised quotations will follow for signature.</p>'
+    + list.map(w => '<a class="card" href="' + escapeHtml(WORKSHEET_URL_BASE + '/' + encodeURIComponent(w.releaseId)) + '" data-testid="card-worksheet-' + escapeHtml(w.releaseId) + '">'
+      + '<div class="top"><div><h3>' + escapeHtml(w.title) + '</h3><p class="trade">' + escapeHtml(w.contractorName) + ' · quotation ' + escapeHtml(w.quotationRef) + '</p></div>'
+      + '<div class="budget-money"><div class="amount">' + escapeHtml(cents(w.revisedTtcCents)) + ' TTC</div><div class="trade">was ' + escapeHtml(cents(w.originalTtcCents)) + ' TTC</div></div></div>'
+      + (w.commentCount ? '<div class="badges"><span class="badge b-info">' + w.commentCount + ' comment' + (w.commentCount > 1 ? 's' : '') + '</span></div>' : '')
+      + '<div class="open-hint">View agreed changes &rarr;</div></a>').join('')
+    + '</section>';
+}
+
 function renderBudget(b, f) {
   if (!b || !b.entries.length) return "";
   const signedHt = f ? f.totalContractedHt : 0;
@@ -755,7 +844,7 @@ async function load() {
     : '<div class="empty" data-testid="text-no-quotations">' + (data.budget && data.budget.entries.length
       ? 'No detailed quotation documents have been shared yet. Selected budget amounts are shown above.'
       : 'No quotations have been shared with you yet.') + '</div>';
-  root.innerHTML = greeting + renderBudget(data.budget, data.financials) + renderFinancials(data.financials) + cards;
+  root.innerHTML = greeting + renderBudget(data.budget, data.financials) + renderFinancials(data.financials) + renderWorksheets(data.worksheets) + cards;
 }
 
 load();

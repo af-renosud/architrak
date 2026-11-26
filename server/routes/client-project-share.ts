@@ -20,6 +20,8 @@ import {
   renderProjectShareShell,
   type ProjectSharePayload,
 } from "./public-client-project-share";
+import { renderWorksheetShareShell } from "./worksheet-share-shell";
+import { worksheetAgreementService } from "../services/worksheet-agreement";
 
 const router = Router();
 
@@ -233,6 +235,29 @@ router.get(
       financials: null,
     };
     res.json(empty);
+  },
+);
+
+/** Architect preview of a shared worksheet copy (read-only, no comments). */
+const previewWorksheetParams = z.object({ projectId: z.coerce.number().int().positive(), releaseId: z.coerce.number().int().positive() });
+router.get(
+  "/api/projects/:projectId/client-share/preview/worksheets/:releaseId",
+  validateRequest({ params: previewWorksheetParams }),
+  async (req, res) => {
+    const base = `/api/projects/${Number(req.params.projectId)}/client-share/preview`;
+    res.type("html").send(renderWorksheetShareShell({
+      dataUrl: `${base}/worksheets/${Number(req.params.releaseId)}/data`, commentUrl: null, backUrl: `${base}/shell`, preview: true,
+    }));
+  },
+);
+router.get(
+  "/api/projects/:projectId/client-share/preview/worksheets/:releaseId/data",
+  validateRequest({ params: previewWorksheetParams }),
+  async (req, res) => {
+    const release = await worksheetAgreementService().publicRelease(Number(req.params.projectId), Number(req.params.releaseId));
+    if (!release) return res.status(404).json({ message: "This worksheet copy is not shared." });
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json(release);
   },
 );
 

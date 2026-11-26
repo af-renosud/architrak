@@ -3,9 +3,10 @@ import { requireAuth } from "../auth/middleware";
 import { WorksheetError, worksheetService } from "../services/quotation-worksheet";
 import { buildWorksheetWorkbook } from "../services/quotation-worksheet-excel";
 import { quotationChecksService } from "../services/quotation-checks";
+import { worksheetAgreementService } from "../services/worksheet-agreement";
 
 /** Architect-only client worksheets (behind the authenticated perimeter). */
-export function createQuotationWorksheetRouter(service = worksheetService, checks = quotationChecksService) {
+export function createQuotationWorksheetRouter(service = worksheetService, checks = quotationChecksService, agreement = worksheetAgreementService) {
   const router = Router();
   router.use(["/api/devis/:devisId/worksheets", "/api/worksheets"], requireAuth, (_req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
@@ -45,6 +46,46 @@ export function createQuotationWorksheetRouter(service = worksheetService, check
   router.delete("/api/worksheets/:id/lines/:lineId", async (req, res, next) => {
     try { res.json(await service().deleteAddedLine(id(req.params.id), id(req.params.lineId), req.body, req.session.userId!)); } catch (e) { fail(e, res, next); }
   });
+  router.get("/api/devis/:devisId/worksheets/agreement-summary", async (req, res, next) => {
+    try { res.json(await agreement().devisSummary(id(req.params.devisId))); } catch (e) { fail(e, res, next); }
+  });
+
+  // Agreed worksheet → sealed client copy on the client link.
+  router.get("/api/worksheets/:id/client-share", async (req, res, next) => {
+    try { res.json(await agreement().shareState(id(req.params.id))); } catch (e) { fail(e, res, next); }
+  });
+  router.post("/api/worksheets/:id/client-share", async (req, res, next) => {
+    try { res.status(201).json(await agreement().share(id(req.params.id), req.body, req.session.userId!)); } catch (e) { fail(e, res, next); }
+  });
+  router.post("/api/worksheets/:id/client-share/:releaseId/withdraw", async (req, res, next) => {
+    try { res.json(await agreement().withdraw(id(req.params.id), id(req.params.releaseId), req.session.userId!)); } catch (e) { fail(e, res, next); }
+  });
+  router.post("/api/worksheets/:id/client-share/:releaseId/acknowledge", async (req, res, next) => {
+    try { res.json(await agreement().acknowledgeComments(id(req.params.id), id(req.params.releaseId), req.session.userId!)); } catch (e) { fail(e, res, next); }
+  });
+
+  // Agreed worksheet → French revision request to the contractor.
+  router.get("/api/worksheets/:id/revision-requests", async (req, res, next) => {
+    try { res.json(await agreement().listRevisionRequests(id(req.params.id))); } catch (e) { fail(e, res, next); }
+  });
+  router.post("/api/worksheets/:id/revision-requests/preview", async (req, res, next) => {
+    try { res.json(await agreement().previewRevisionRequest(id(req.params.id), req.body)); } catch (e) { fail(e, res, next); }
+  });
+  router.post("/api/worksheets/:id/revision-requests", async (req, res, next) => {
+    try { res.status(201).json(await agreement().sendRevisionRequest(id(req.params.id), req.body, req.session.userId!)); } catch (e) { fail(e, res, next); }
+  });
+  router.post("/api/worksheets/:id/revision-requests/:requestId/retry", async (req, res, next) => {
+    try { res.json(await agreement().retryRevisionRequest(id(req.params.id), id(req.params.requestId), req.session.userId!)); } catch (e) { fail(e, res, next); }
+  });
+
+  // Revised quotation ↔ agreed worksheet.
+  router.get("/api/worksheets/:id/comparison-candidates", async (req, res, next) => {
+    try { res.json(await agreement().comparisonCandidates(id(req.params.id))); } catch (e) { fail(e, res, next); }
+  });
+  router.get("/api/worksheets/:id/comparison/:targetDevisId", async (req, res, next) => {
+    try { res.json(await agreement().compare(id(req.params.id), id(req.params.targetDevisId))); } catch (e) { fail(e, res, next); }
+  });
+
   router.get("/api/worksheets/:id/export.xlsx", async (req, res, next) => {
     try {
       const detail = await service().get(id(req.params.id));

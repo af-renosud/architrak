@@ -70,6 +70,19 @@ export interface MigrationArtifact {
  * migration. Set the flag on every new data-only DML backfill.
  */
 export const MIGRATION_ARTIFACTS: readonly MigrationArtifact[] = [
+  { tag: "0159_worksheet_client_share", artifact: { kind: "all", artifacts: [
+    { kind: "table", table: "client_worksheet_releases" },
+    { kind: "table", table: "client_worksheet_comments" },
+    { kind: "table", table: "worksheet_revision_requests" },
+    { kind: "constraint", table: "client_worksheet_releases", constraint: "client_worksheet_releases_worksheet_id_quotation_worksheets_id_fk" },
+    { kind: "constraint", table: "client_worksheet_comments", constraint: "client_worksheet_comments_release_id_client_worksheet_releases_id_fk" },
+    { kind: "constraint", table: "client_worksheet_comments", constraint: "client_worksheet_comments_body_check" },
+    { kind: "constraint", table: "worksheet_revision_requests", constraint: "worksheet_revision_requests_communication_id_project_communications_id_fk" },
+    { kind: "constraint", table: "quotation_worksheet_audit", constraint: "quotation_worksheet_audit_action_check" },
+    { kind: "index", index: "worksheet_revision_requests_request_id_idx" },
+    { kind: "index", index: "client_worksheet_releases_worksheet_idx" },
+    { kind: "trigger", table: "client_worksheet_releases", trigger: "client_worksheet_releases_sealed" },
+  ] } },
   { tag: "0158_quotation_check_points", artifact: { kind: "all", artifacts: [
     { kind: "table", table: "quotation_check_reviews" },
     { kind: "table", table: "quotation_check_ai_runs" },

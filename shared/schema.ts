@@ -3843,6 +3843,9 @@ export const CLIENT_PROJECT_SHARE_AUDIT_ACTIONS = [
   "archidoc_lookup",
   // Signature-package receipt; detail is a structured JSON audit snapshot.
   "signature_question_authorization",
+  // Agreed client worksheet sealed onto / withdrawn from the client link.
+  "worksheet_share",
+  "worksheet_withdraw",
 ] as const;
 /**
  * insurance_overrides — captured at the moment an architect manually
@@ -4716,9 +4719,76 @@ export const quotationWorksheetAudit = pgTable("quotation_worksheet_audit", {
   createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
 }, (table) => [
   index("quotation_worksheet_audit_worksheet_idx").on(table.worksheetId, table.id),
-  check("quotation_worksheet_audit_action_check", sql`${table.action} IN ('create','duplicate','update_line','add_line','remove_line','restore_line','delete_line','update_settings')`),
+  check("quotation_worksheet_audit_action_check", sql`${table.action} IN ('create','duplicate','update_line','add_line','remove_line','restore_line','delete_line','update_settings','share_client','withdraw_client','revision_request')`),
 ]);
 export type QuotationWorksheetAuditRow = typeof quotationWorksheetAudit.$inferSelect;
+
+/**
+ * Sealed client copies of a worksheet version, shown on the project's client
+ * link. The payload (English) is frozen at sealing; only the withdrawal
+ * columns may change afterwards (enforced by trigger).
+ */
+export const clientWorksheetReleases = pgTable("client_worksheet_releases", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  worksheetId: integer("worksheet_id").notNull().references(() => quotationWorksheets.id, { onDelete: "cascade" }),
+  worksheetRevision: integer("worksheet_revision").notNull(),
+  payload: jsonb("payload").notNull(),
+  payloadSha256: text("payload_sha256").notNull(),
+  sealedByUserId: integer("sealed_by_user_id"),
+  sealedAt: timestamp("sealed_at", { withTimezone: true }).default(sql`now()`).notNull(),
+  withdrawnAt: timestamp("withdrawn_at", { withTimezone: true }),
+  withdrawnByUserId: integer("withdrawn_by_user_id"),
+}, (table) => [
+  index("client_worksheet_releases_project_idx").on(table.projectId, table.id),
+  index("client_worksheet_releases_worksheet_idx").on(table.worksheetId, table.id),
+]);
+export type ClientWorksheetRelease = typeof clientWorksheetReleases.$inferSelect;
+
+/** Client comments on a shared worksheet copy (read-only view; no edits). */
+export const clientWorksheetComments = pgTable("client_worksheet_comments", {
+  id: serial("id").primaryKey(),
+  releaseId: integer("release_id").notNull().references(() => clientWorksheetReleases.id, { onDelete: "cascade" }),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  tokenId: integer("token_id"),
+  authorEmail: text("author_email").notNull(),
+  authorName: text("author_name"),
+  body: text("body").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+  acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+  acknowledgedByUserId: integer("acknowledged_by_user_id"),
+}, (table) => [
+  index("client_worksheet_comments_release_idx").on(table.releaseId, table.id),
+  check("client_worksheet_comments_body_check", sql`char_length(${table.body}) BETWEEN 1 AND 5000`),
+]);
+export type ClientWorksheetComment = typeof clientWorksheetComments.$inferSelect;
+
+/**
+ * Revision requests sent to the contractor from an agreed worksheet version.
+ * Records the exact French text and the agreed lines it was built from; the
+ * email itself goes through project_communications.
+ */
+export const worksheetRevisionRequests = pgTable("worksheet_revision_requests", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  devisId: integer("devis_id").notNull().references(() => devis.id, { onDelete: "cascade" }),
+  worksheetId: integer("worksheet_id").notNull().references(() => quotationWorksheets.id, { onDelete: "cascade" }),
+  worksheetRevision: integer("worksheet_revision").notNull(),
+  requestId: text("request_id").notNull(),
+  changes: jsonb("changes").notNull(),
+  agreedLines: jsonb("agreed_lines").notNull(),
+  subject: text("subject").notNull(),
+  body: text("body").notNull(),
+  recipientEmail: text("recipient_email").notNull(),
+  communicationId: integer("communication_id").references(() => projectCommunications.id, { onDelete: "set null" }),
+  createdByUserId: integer("created_by_user_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).default(sql`now()`).notNull(),
+}, (table) => [
+  uniqueIndex("worksheet_revision_requests_request_id_idx").on(table.requestId),
+  index("worksheet_revision_requests_worksheet_idx").on(table.worksheetId, table.id),
+]);
+export type WorksheetRevisionRequest = typeof worksheetRevisionRequests.$inferSelect;
 
 /**
  * Automatic "points to check" on a quotation. Rule points are computed on
